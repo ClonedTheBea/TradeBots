@@ -43,7 +43,8 @@ def main() -> int:
 
     with SQLiteStore(args.db) as store:
         store.initialize()
-        store.save_signal(signal)
+        for historical_signal in result.signals:
+            store.save_signal(historical_signal)
         store.save_backtest_result(result)
         for trade in result.trades:
             store.save_trade(trade)
@@ -54,9 +55,14 @@ def main() -> int:
     print(f"Reason: {advice.reason}")
     print(
         "Backtest: "
+        f"start=${result.starting_cash:.2f} "
+        f"end=${result.ending_cash:.2f} "
         f"return={result.total_return_pct:.2f}% "
         f"trades={len(result.trades)} "
-        f"win_rate={result.win_rate:.2f}"
+        f"signals={len(result.signals)} "
+        f"win_rate={result.win_rate:.2f} "
+        f"avg_profit=${result.average_profit_per_trade:.2f} "
+        f"max_drawdown={result.max_drawdown_pct:.2f}%"
     )
     print(f"Stored results in: {Path(args.db).resolve()}")
     return 0

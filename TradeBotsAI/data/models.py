@@ -47,7 +47,9 @@ class BacktestResult:
     ending_cash: float
     total_return_pct: float
     trades: tuple[Trade, ...]
+    signals: tuple[Signal, ...]
     win_rate: float
+    average_profit_per_trade: float
     max_drawdown_pct: float
 
 

@@ -74,7 +74,9 @@ class SQLiteStore:
                 ending_cash REAL NOT NULL,
                 total_return_pct REAL NOT NULL,
                 trade_count INTEGER NOT NULL,
+                signal_count INTEGER NOT NULL DEFAULT 0,
                 win_rate REAL NOT NULL,
+                average_profit_per_trade REAL NOT NULL DEFAULT 0,
                 max_drawdown_pct REAL NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -82,6 +84,12 @@ class SQLiteStore:
         )
         self._ensure_column("signals", "score", "REAL NOT NULL DEFAULT 0")
         self._ensure_column("signals", "reasons", "TEXT NOT NULL DEFAULT '[]'")
+        self._ensure_column("backtest_results", "signal_count", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(
+            "backtest_results",
+            "average_profit_per_trade",
+            "REAL NOT NULL DEFAULT 0",
+        )
         conn.commit()
 
     def save_signal(self, signal: Signal) -> None:
@@ -133,9 +141,9 @@ class SQLiteStore:
             """
             INSERT INTO backtest_results (
                 symbol, starting_cash, ending_cash, total_return_pct,
-                trade_count, win_rate, max_drawdown_pct
+                trade_count, signal_count, win_rate, average_profit_per_trade, max_drawdown_pct
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.symbol,
@@ -143,7 +151,9 @@ class SQLiteStore:
                 result.ending_cash,
                 result.total_return_pct,
                 len(result.trades),
+                len(result.signals),
                 result.win_rate,
+                result.average_profit_per_trade,
                 result.max_drawdown_pct,
             ),
         )

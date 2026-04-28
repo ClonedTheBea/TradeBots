@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from data.models import BacktestResult, Candle, Trade
+from data.models import BacktestResult, Candle, Signal, Trade
 from strategy.signals import SignalEngine
 
 
@@ -12,7 +12,6 @@ from strategy.signals import SignalEngine
 class BacktestConfig:
     starting_cash: float = 10_000.0
     position_fraction: float = 1.0
-    min_confidence_to_trade: float = 0.5
 
 
 class Backtester:
@@ -31,24 +30,25 @@ class Backtester:
         entry_price = 0.0
         entry_time = ""
         trades: list[Trade] = []
+        signals: list[Signal] = []
         equity_curve: list[float] = []
 
-        warmup = 35
+        signal_start_index = _signal_start_index(self.signal_engine)
         for index, candle in enumerate(candles):
-            equity_curve.append(cash + (quantity * candle.close))
-            if index < warmup:
+            if index < signal_start_index:
+                equity_curve.append(cash + (quantity * candle.close))
                 continue
 
             signal = self.signal_engine.signal_at(candles[: index + 1], index, symbol)
-            can_trade = signal.confidence >= self.config.min_confidence_to_trade
+            signals.append(signal)
 
-            if signal.action == "BUY" and can_trade and quantity == 0:
+            if signal.action == "BUY" and quantity == 0:
                 allocation = cash * self.config.position_fraction
                 quantity = allocation / candle.close
                 cash -= allocation
                 entry_price = candle.close
                 entry_time = candle.timestamp
-            elif signal.action == "SELL" and can_trade and quantity > 0:
+            elif signal.action == "SELL" and quantity > 0:
                 proceeds = quantity * candle.close
                 cash += proceeds
                 trades.append(
@@ -65,6 +65,8 @@ class Backtester:
                 quantity = 0.0
                 entry_price = 0.0
                 entry_time = ""
+
+            equity_curve.append(cash + (quantity * candle.close))
 
         last_candle = candles[-1]
         if quantity > 0:
@@ -85,6 +87,7 @@ class Backtester:
         total_return_pct = ((ending_cash - self.config.starting_cash) / self.config.starting_cash) * 100
         wins = sum(1 for trade in trades if trade.profit_loss > 0)
         win_rate = wins / len(trades) if trades else 0.0
+        average_profit = sum(trade.profit_loss for trade in trades) / len(trades) if trades else 0.0
 
         return BacktestResult(
             symbol=symbol,
@@ -92,7 +95,9 @@ class Backtester:
             ending_cash=round(ending_cash, 2),
             total_return_pct=round(total_return_pct, 4),
             trades=tuple(trades),
+            signals=tuple(signals),
             win_rate=round(win_rate, 4),
+            average_profit_per_trade=round(average_profit, 2),
             max_drawdown_pct=round(_max_drawdown_pct(equity_curve), 4),
         )
 
@@ -131,3 +136,13 @@ def _max_drawdown_pct(equity_curve: list[float]) -> float:
             max_drawdown = max(max_drawdown, drawdown)
     return max_drawdown
 
+
+def _signal_start_index(signal_engine: SignalEngine) -> int:
+    config = signal_engine.config
+    macd_start_index = 26 + 9 - 2
+    return max(
+        config.long_sma_period - 1,
+        config.rsi_period,
+        config.bollinger_period - 1,
+        macd_start_index,
+    )
