@@ -1,0 +1,9 @@
+venv/
+.env
+__pycache__/
+*.pyc
+Codex.exe
+*.winmd
+Server/
+exports/
+uploads/
