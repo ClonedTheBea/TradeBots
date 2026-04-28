@@ -63,6 +63,24 @@ You can run advisory mode against the recorded file at any time:
 python -m app.main --csv data/manual_prices.csv --symbol GAME
 ```
 
+## Capture Once OCR Mode
+
+To capture the screen once, OCR the Trade Bots HUD, append the parsed current
+price to `data/tradebots_live.csv`, and run advisory when enough prices exist:
+
+```powershell
+python -m app.main capture-once
+```
+
+Debug mode saves a screenshot and prints raw OCR text:
+
+```powershell
+python -m app.main capture-once --debug
+```
+
+This mode requires Pillow, pytesseract, mss, and the Tesseract OCR application
+installed on your machine. It does not click, type into, or control the game.
+
 ## Project Layout
 
 - `app/`: command line entry point and orchestration

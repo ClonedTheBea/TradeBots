@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 from uuid import uuid4
 
+from app.capture import DEFAULT_LIVE_CSV, run_capture_once
 from app.recorder import record_manual_step
 from data.csv_loader import load_candles_from_csv
 from decision.advisor import build_advice
@@ -16,7 +17,28 @@ from strategy.signals import SignalConfig, SignalEngine
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="TradeBots AI advisory assistant")
-    parser.add_argument("--csv", required=True, help="Path to OHLCV or close-only candle CSV data")
+    subparsers = parser.add_subparsers(dest="command")
+    capture_parser = subparsers.add_parser(
+        "capture-once",
+        help="Capture one screenshot, OCR the Trade Bots HUD, append price, and run advisory",
+    )
+    capture_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Save a debug screenshot and print raw OCR text",
+    )
+    capture_parser.add_argument(
+        "--csv",
+        default=str(DEFAULT_LIVE_CSV),
+        help="Close-only CSV path to append captured prices",
+    )
+    capture_parser.add_argument(
+        "--symbol",
+        default="GAME",
+        help="Optional symbol/name for the captured scenario",
+    )
+
+    parser.add_argument("--csv", help="Path to OHLCV or close-only candle CSV data")
     parser.add_argument(
         "--db",
         default="tradebots_ai.sqlite",
@@ -56,6 +78,22 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.command == "capture-once":
+        try:
+            return run_capture_once(
+                SignalEngine(SignalConfig()),
+                symbol=args.symbol,
+                csv_path=args.csv,
+                debug=args.debug,
+            )
+        except (RuntimeError, ValueError) as exc:
+            print(exc)
+            return 1
+
+    if not args.csv:
+        print("CSV path is required unless using capture-once.")
+        return 1
+
     csv_path = Path(args.csv)
 
     if args.record_step:
