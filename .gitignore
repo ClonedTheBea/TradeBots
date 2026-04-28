@@ -7,3 +7,5 @@ Codex.exe
 Server/
 exports/
 uploads/
+*.sqlite
+*.sqlite3
