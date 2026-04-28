@@ -13,6 +13,16 @@ from web.server import create_app
 
 @unittest.skipIf(TestClient is None, "FastAPI test dependencies are not installed")
 class WebDashboardTests(unittest.TestCase):
+    def test_index_page_renders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = create_app(db_path=str(Path(tmp) / "test.sqlite"))
+            client = TestClient(app)
+
+            response = client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("TradeBotsAI", response.text)
+
     def test_status_endpoint_returns_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             app = create_app(db_path=str(Path(tmp) / "test.sqlite"))

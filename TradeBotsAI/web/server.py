@@ -149,8 +149,9 @@ def create_app(db_path: str = DEFAULT_DB_PATH):
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
         return templates.TemplateResponse(
+            request,
             "index.html",
-            {"request": request, "settings": state.scheduler_settings},
+            {"settings": state.scheduler_settings},
         )
 
     @app.get("/api/status")
