@@ -38,7 +38,7 @@
       <label>Trials <input id="validation_trials" type="number" value="100"></label>
       <label>Train ratio <input id="validation_train_ratio" type="number" step="0.01" value="0.7"></label>
     </div>
-    <button onclick="validateSymbol()">Validate</button>
+    <button id="validate_button" onclick="validateSymbol()">Validate</button>
     <pre id="validation_result" class="output"></pre>
   </article>
   <article class="panel">
@@ -108,6 +108,20 @@ async function refreshLogs() {
   document.getElementById("console").textContent = data.logs.join("\n");
 }
 
+async function refreshJobs() {
+  const data = await (await fetch("/api/jobs")).json();
+  const validationJobs = data.jobs.filter(job => job.job_type === "validation");
+  const running = validationJobs.some(job => job.status === "running");
+  const latest = validationJobs[0];
+  const button = document.getElementById("validate_button");
+  button.disabled = running;
+  button.textContent = running ? "Validation running" : "Validate";
+  if (latest) {
+    document.getElementById("validation_result").textContent =
+      `Status: ${latest.status}\nJob: ${latest.job_id}\nStarted: ${latest.started_at}\nCompleted: ${latest.completed_at || ""}\nError: ${latest.error || "none"}\n\n${latest.output || ""}`;
+  }
+}
+
 async function startScheduler() {
   await postJson("/api/scheduler/start", schedulerPayload());
   await refreshStatus();
@@ -133,9 +147,9 @@ async function validateSymbol() {
     trials: Number(document.getElementById("validation_trials").value),
     train_ratio: Number(document.getElementById("validation_train_ratio").value)
   });
-  const params = data.parameters || {};
   document.getElementById("validation_result").textContent =
-    `${data.output || data.message || ""}\n\nPromotion: ${params.promotion_status || "unknown"}\nReasons: ${(params.rejection_reasons || []).join("; ") || "none"}`;
+    data.started ? `Status: running\nJob: ${data.job_id}` : (data.message || "Validation could not start.");
+  await refreshJobs();
   await refreshLogs();
 }
 
@@ -154,8 +168,10 @@ async function loadReports() {
 
 refreshStatus();
 refreshLogs();
+refreshJobs();
 loadReports();
 setInterval(refreshStatus, 5000);
 setInterval(refreshLogs, 2000);
+setInterval(refreshJobs, 2000);
 </script>
 {% endblock %}

@@ -12,6 +12,9 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 import io
 import os
+from pathlib import Path
+import subprocess
+import sys
 import threading
 from typing import Any, Callable
 from uuid import uuid4
@@ -38,6 +41,15 @@ class SchedulerSettings:
     lookback: int = 180
 
 
+@dataclass(frozen=True)
+class ValidationSettings:
+    symbol: str
+    timeframe: str = "1Day"
+    lookback: int = 365
+    trials: int = 100
+    train_ratio: float = 0.7
+
+
 class WebLogBuffer:
     def __init__(self, limit: int = LOG_LIMIT) -> None:
         self._lines: deque[str] = deque(maxlen=limit)
@@ -60,9 +72,11 @@ class DashboardState:
         self.db_path = db_path
         self.logs = WebLogBuffer()
         self._lock = threading.Lock()
+        self._job_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._scheduler_thread: threading.Thread | None = None
         self.scheduler_settings = SchedulerSettings()
+        self.jobs: dict[str, dict[str, Any]] = {}
 
     def scheduler_running(self) -> bool:
         thread = self._scheduler_thread
@@ -125,6 +139,98 @@ class DashboardState:
         finally:
             self.logs.append("Scheduler loop stopped.")
 
+    def start_validation(self, settings: ValidationSettings) -> dict[str, Any]:
+        with self._job_lock:
+            if self._validation_running_locked():
+                return {
+                    "started": False,
+                    "message": "Validation already running.",
+                    "job_id": self._running_validation_id_locked(),
+                }
+            job_id = uuid4().hex
+            job = {
+                "job_id": job_id,
+                "job_type": "validation",
+                "status": "running",
+                "started_at": datetime.now().isoformat(timespec="seconds"),
+                "completed_at": None,
+                "output": "",
+                "recent_logs": [],
+                "error": None,
+                "settings": asdict(settings),
+            }
+            self.jobs[job_id] = job
+        thread = threading.Thread(
+            target=self._validation_worker,
+            args=(job_id, settings),
+            name=f"tradebots-validation-{job_id[:8]}",
+            daemon=True,
+        )
+        thread.start()
+        return {"started": True, "job_id": job_id, "status": "running"}
+
+    def job_statuses(self) -> list[dict[str, Any]]:
+        with self._job_lock:
+            return [dict(job) for job in sorted(self.jobs.values(), key=lambda item: item["started_at"], reverse=True)]
+
+    def _validation_worker(self, job_id: str, settings: ValidationSettings) -> None:
+        self._append_job_log(job_id, f"Starting validation for {settings.symbol}...")
+        if self.scheduler_running():
+            self._append_job_log(
+                job_id,
+                "Scheduler is running; validation will continue independently. Watch Alpaca rate limits.",
+            )
+        self._append_job_log(job_id, "Fetching candles...")
+        self._append_job_log(job_id, f"Running Optuna trials: {settings.trials}")
+        try:
+            exit_code = _run_validation_command(
+                settings,
+                self.db_path,
+                lambda line: self._append_job_log(job_id, line),
+            )
+            params = _get_params(self.db_path, settings.symbol, settings.timeframe)
+            status = params.get("promotion_status") or "unknown"
+            reasons = params.get("rejection_reasons") or []
+            self._append_job_log(job_id, f"Promotion result: {status}")
+            if reasons:
+                self._append_job_log(job_id, "Rejection reasons: " + "; ".join(reasons))
+            self._finish_job(job_id, "completed" if exit_code == 0 else "failed", None if exit_code == 0 else f"exit code {exit_code}")
+        except Exception as exc:
+            self._append_job_log(job_id, f"Validation failed: {exc}")
+            self._finish_job(job_id, "failed", str(exc))
+
+    def _append_job_log(self, job_id: str, message: str) -> None:
+        self.logs.append(message)
+        with self._job_lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                return
+            safe_message = _redact_secrets(message.rstrip())
+            recent_logs = list(job.get("recent_logs") or [])
+            for line in safe_message.splitlines() or [""]:
+                recent_logs.append(line)
+            job["recent_logs"] = recent_logs[-100:]
+            job["output"] = "\n".join(recent_logs)
+
+    def _finish_job(self, job_id: str, status: str, error: str | None) -> None:
+        with self._job_lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                return
+            job["status"] = status
+            job["completed_at"] = datetime.now().isoformat(timespec="seconds")
+            job["error"] = error
+        self.logs.append(f"Validation job {job_id} {status}.")
+
+    def _validation_running_locked(self) -> bool:
+        return any(job["job_type"] == "validation" and job["status"] == "running" for job in self.jobs.values())
+
+    def _running_validation_id_locked(self) -> str | None:
+        for job in self.jobs.values():
+            if job["job_type"] == "validation" and job["status"] == "running":
+                return str(job["job_id"])
+        return None
+
 
 def create_app(db_path: str = DEFAULT_DB_PATH):
     try:
@@ -139,8 +245,6 @@ def create_app(db_path: str = DEFAULT_DB_PATH):
     state = DashboardState(db_path=db_path)
     app = FastAPI(title="TradeBotsAI Dashboard")
     app.state.dashboard = state
-
-    from pathlib import Path
 
     root = Path(__file__).resolve().parent
     app.mount("/static", StaticFiles(directory=root / "static"), name="static")
@@ -161,6 +265,10 @@ def create_app(db_path: str = DEFAULT_DB_PATH):
     @app.get("/api/logs")
     def api_logs() -> dict[str, list[str]]:
         return {"logs": state.logs.lines()}
+
+    @app.get("/api/jobs")
+    def api_jobs() -> dict[str, list[dict[str, Any]]]:
+        return {"jobs": state.job_statuses()}
 
     @app.post("/api/scheduler/start")
     async def api_start_scheduler(request: Request) -> dict[str, Any]:
@@ -191,24 +299,16 @@ def create_app(db_path: str = DEFAULT_DB_PATH):
         symbol = str(payload.get("symbol") or "").strip().upper()
         if not symbol:
             return {"ok": False, "message": "Symbol is required."}
-        timeframe = str(payload.get("timeframe") or "1Day")
-        lookback = int(payload.get("lookback") or 365)
-        trials = int(payload.get("trials") or 100)
-        train_ratio = float(payload.get("train_ratio") or 0.7)
-        state.logs.append(f"Validation requested for {symbol}.")
-        exit_code, output = _capture_command_output(
-            state.logs,
-            f"validate {symbol}",
-            _run_validate_symbol,
-            symbol,
-            timeframe,
-            lookback,
-            train_ratio,
-            trials,
-            state.db_path,
+        result = state.start_validation(
+            ValidationSettings(
+                symbol=symbol,
+                timeframe=str(payload.get("timeframe") or "1Day"),
+                lookback=int(payload.get("lookback") or 365),
+                trials=int(payload.get("trials") or 100),
+                train_ratio=float(payload.get("train_ratio") or 0.7),
+            )
         )
-        params = _get_params(state.db_path, symbol, timeframe)
-        return {"ok": exit_code == 0, "output": output, "parameters": params}
+        return result
 
     @app.get("/api/parameters")
     def api_parameters(symbol: str, timeframe: str = "1Day") -> dict[str, Any]:
@@ -219,6 +319,45 @@ def create_app(db_path: str = DEFAULT_DB_PATH):
         return build_reports(state.db_path, last)
 
     return app
+
+
+def _run_validation_command(
+    settings: ValidationSettings,
+    db_path: str,
+    on_line: Callable[[str], None],
+) -> int:
+    command = [
+        sys.executable,
+        "-m",
+        "app.main",
+        "validate-symbol",
+        "--symbol",
+        settings.symbol,
+        "--timeframe",
+        settings.timeframe,
+        "--lookback",
+        str(settings.lookback),
+        "--train-ratio",
+        str(settings.train_ratio),
+        "--trials",
+        str(settings.trials),
+        "--db",
+        db_path,
+    ]
+    project_root = Path(__file__).resolve().parents[1]
+    process = subprocess.Popen(
+        command,
+        cwd=str(project_root),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    assert process.stdout is not None
+    for line in process.stdout:
+        stripped = line.rstrip()
+        if stripped:
+            on_line(stripped)
+    return process.wait()
 
 
 def build_status(state: DashboardState) -> dict[str, Any]:
@@ -289,28 +428,6 @@ def _run_scheduler_cycle(settings: SchedulerSettings, db_path: str) -> int:
         RiskSettings(),
         db_path,
         max_cycles=1,
-    )
-
-
-def _run_validate_symbol(
-    symbol: str,
-    timeframe: str,
-    lookback: int,
-    train_ratio: float,
-    trials: int,
-    db_path: str,
-) -> int:
-    from app.main import run_validate_symbol
-
-    return run_validate_symbol(
-        symbol,
-        timeframe,
-        lookback,
-        train_ratio,
-        trials,
-        3,
-        False,
-        db_path,
     )
 
 
