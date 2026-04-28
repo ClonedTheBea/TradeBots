@@ -110,6 +110,8 @@ class SQLiteStore:
                 validation_win_rate_pct REAL,
                 validation_trade_count INTEGER,
                 overfit_warning TEXT,
+                promotion_status TEXT,
+                rejection_reasons_json TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 is_active INTEGER NOT NULL DEFAULT 1
             );
@@ -191,6 +193,8 @@ class SQLiteStore:
         self._ensure_column("strategy_parameters", "validation_win_rate_pct", "REAL")
         self._ensure_column("strategy_parameters", "validation_trade_count", "INTEGER")
         self._ensure_column("strategy_parameters", "overfit_warning", "TEXT")
+        self._ensure_column("strategy_parameters", "promotion_status", "TEXT")
+        self._ensure_column("strategy_parameters", "rejection_reasons_json", "TEXT NOT NULL DEFAULT '[]'")
         self._ensure_column("backtest_results", "signal_count", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column(
             "backtest_results",
@@ -398,9 +402,10 @@ class SQLiteStore:
                 max_drawdown_pct, win_rate_pct, trade_count, score,
                 train_return_pct, validation_return_pct, train_drawdown_pct,
                 validation_drawdown_pct, train_win_rate_pct, validation_win_rate_pct,
-                validation_trade_count, overfit_warning, is_active
+                validation_trade_count, overfit_warning, promotion_status,
+                rejection_reasons_json, is_active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 symbol,
@@ -427,11 +432,40 @@ class SQLiteStore:
                 _optional_float(params.get("validation_win_rate_pct")),
                 _optional_int(params.get("validation_trade_count")),
                 params.get("overfit_warning"),
+                params.get("promotion_status"),
+                json.dumps(list(params.get("rejection_reasons") or [])),
                 1 if active else 0,
             ),
         )
         self._conn().commit()
         return int(cursor.lastrowid)
+
+    def promote_strategy_parameters(self, row_id: int) -> None:
+        cursor = self._conn().execute(
+            "SELECT symbol, timeframe FROM strategy_parameters WHERE id = ?",
+            (row_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise ValueError(f"strategy parameter row not found: {row_id}")
+        symbol, timeframe = row
+        self._conn().execute(
+            """
+            UPDATE strategy_parameters
+            SET is_active = 0
+            WHERE symbol = ? AND timeframe = ? AND is_active = 1
+            """,
+            (symbol, timeframe),
+        )
+        self._conn().execute(
+            """
+            UPDATE strategy_parameters
+            SET is_active = 1, promotion_status = 'promoted'
+            WHERE id = ?
+            """,
+            (row_id,),
+        )
+        self._conn().commit()
 
     def get_active_strategy_parameters(self, symbol: str, timeframe: str) -> dict[str, Any] | None:
         cursor = self._conn().execute(
@@ -443,7 +477,8 @@ class SQLiteStore:
                 max_drawdown_pct, win_rate_pct, trade_count, score,
                 train_return_pct, validation_return_pct, train_drawdown_pct,
                 validation_drawdown_pct, train_win_rate_pct, validation_win_rate_pct,
-                validation_trade_count, overfit_warning, created_at, is_active
+                validation_trade_count, overfit_warning, promotion_status,
+                rejection_reasons_json, created_at, is_active
             FROM strategy_parameters
             WHERE symbol = ? AND timeframe = ? AND is_active = 1
             ORDER BY
@@ -452,6 +487,28 @@ class SQLiteStore:
                     ELSE 1
                 END,
                 id DESC
+            LIMIT 1
+            """,
+            (symbol.upper(), timeframe),
+        )
+        row = cursor.fetchone()
+        return _strategy_params_row_to_dict(row) if row else None
+
+    def get_latest_strategy_parameters(self, symbol: str, timeframe: str) -> dict[str, Any] | None:
+        cursor = self._conn().execute(
+            """
+            SELECT
+                id, symbol, timeframe, lookback_days, sma_short, sma_long,
+                rsi_buy, rsi_sell, buy_score_threshold, sell_score_threshold,
+                stop_loss_pct, take_profit_pct, total_return_pct,
+                max_drawdown_pct, win_rate_pct, trade_count, score,
+                train_return_pct, validation_return_pct, train_drawdown_pct,
+                validation_drawdown_pct, train_win_rate_pct, validation_win_rate_pct,
+                validation_trade_count, overfit_warning, promotion_status,
+                rejection_reasons_json, created_at, is_active
+            FROM strategy_parameters
+            WHERE symbol = ? AND timeframe = ?
+            ORDER BY id DESC
             LIMIT 1
             """,
             (symbol.upper(), timeframe),
@@ -848,8 +905,11 @@ def _strategy_params_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
         "validation_win_rate_pct": row[22],
         "validation_trade_count": row[23],
         "overfit_warning": row[24],
-        "created_at": row[25],
-        "is_active": bool(row[26]),
+        "promotion_status": row[25],
+        "rejection_reasons_json": row[26],
+        "rejection_reasons": json.loads(row[26] or "[]"),
+        "created_at": row[27],
+        "is_active": bool(row[28]),
     }
 
 

@@ -401,6 +401,17 @@ trade count, and an overfit warning when the validation result looks weak.
 Trading and advice commands prefer active parameters with acceptable validation
 results when available.
 
+Validated parameters are saved as candidates first. They are promoted to active
+only when validation return, drawdown, trade count, win rate, train/validation
+gap, and overfit warnings pass the built-in safeguards. Rejected candidates do
+not replace existing active parameters. To override this manually:
+
+```powershell
+python -m app.main validate-symbol --symbol BB --timeframe 1Day --lookback 365 --train-ratio 0.7 --trials 100 --force-promote
+```
+
+Forced promotion prints a warning because the parameters may be overfit.
+
 If Optuna is missing, install dependencies:
 
 ```powershell

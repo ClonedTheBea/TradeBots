@@ -257,6 +257,7 @@ def parse_args() -> argparse.Namespace:
     validate_parser.add_argument("--train-ratio", type=float, default=0.7)
     validate_parser.add_argument("--trials", type=int, default=100)
     validate_parser.add_argument("--minimum-trades", type=int, default=3)
+    validate_parser.add_argument("--force-promote", action="store_true")
     validate_parser.add_argument("--db", default="tradebots_ai.sqlite")
 
     for command_name, help_text in (
@@ -444,6 +445,7 @@ def main() -> int:
             args.lookback,
             args.trials,
             args.minimum_trades,
+            args.force_promote,
             args.db,
         )
     if args.command == "tune-symbols":
@@ -1024,11 +1026,28 @@ def run_tune_symbols(
 def run_show_params(symbol: str, timeframe: str, db_path: str) -> int:
     with SQLiteStore(db_path) as store:
         store.initialize()
-        params = store.get_active_strategy_parameters(symbol, timeframe)
-    if params is None:
+        active = store.get_active_strategy_parameters(symbol, timeframe)
+        latest = store.get_latest_strategy_parameters(symbol, timeframe)
+    if active is None:
         print(f"No active tuned parameters for {symbol.upper()} ({timeframe}). Defaults will be used.")
+    else:
+        print(f"Active parameters for {symbol.upper()} ({timeframe})")
+        _print_strategy_params(active)
+    if latest is None:
+        print("Latest candidate parameters: none")
         return 0
-    print(f"Active tuned parameters for {symbol.upper()} ({timeframe})")
+    print("Latest candidate parameters")
+    _print_strategy_params(latest)
+    print(f"Promotion status: {latest.get('promotion_status') or 'unknown'}")
+    reasons = latest.get("rejection_reasons") or []
+    if reasons:
+        print("Rejection reasons:")
+        for reason in reasons:
+            print(f"- {reason}")
+    return 0
+
+
+def _print_strategy_params(params: dict) -> None:
     for key in (
         "sma_short",
         "sma_long",
@@ -1054,7 +1073,6 @@ def run_show_params(symbol: str, timeframe: str, db_path: str) -> int:
         "created_at",
     ):
         print(f"{key}: {params[key]}")
-    return 0
 
 
 def run_validate_symbol(
@@ -1064,11 +1082,13 @@ def run_validate_symbol(
     train_ratio: float,
     trials: int,
     minimum_trades: int,
+    force_promote: bool,
     db_path: str,
 ) -> int:
     from broker.alpaca_client import AlpacaPaperClient
     from strategy.tuner import (
         TuningConfig,
+        should_promote_parameters,
         split_train_validation,
         validate_strategy_for_symbol,
         validation_result_to_storage_params,
@@ -1093,12 +1113,20 @@ def run_validate_symbol(
         return 1
 
     stored = validation_result_to_storage_params(result, normalized_symbol, timeframe, lookback)
+    decision = should_promote_parameters(stored)
+    stored["promotion_status"] = "promoted" if decision.promote else "rejected"
+    stored["rejection_reasons"] = decision.reasons
     with SQLiteStore(db_path) as store:
         store.initialize()
-        row_id = store.save_strategy_parameters(stored, active=True)
+        row_id = store.save_strategy_parameters(stored, active=False)
+        if decision.promote or force_promote:
+            store.promote_strategy_parameters(row_id)
 
     print(f"Walk-forward validation for {normalized_symbol} ({timeframe})")
     print(f"Candles: train={len(train_candles)} validation={len(validation_candles)}")
+    print("Validation Result:")
+    print(f"Train Return: {result.train_backtest.total_return_pct:+.2f}%")
+    print(f"Validation Return: {result.validation_backtest.total_return_pct:+.2f}%")
     print(
         "Train: "
         f"return={result.train_backtest.total_return_pct:.2f}% "
@@ -1114,7 +1142,17 @@ def run_validate_symbol(
         f"trades={len(result.validation_backtest.trades)}"
     )
     print(f"Overfit warning: {result.overfit_warning or 'none'}")
-    print(f"Saved active validated params #{row_id}.")
+    if decision.promote:
+        print("PROMOTED: validation passed promotion rules.")
+    elif force_promote:
+        print("⚠ WARNING: Forced promotion of potentially overfit parameters")
+        for reason in decision.reasons:
+            print(f"- {reason}")
+    else:
+        print("❌ NOT PROMOTED:")
+        for reason in decision.reasons:
+            print(f"- {reason}")
+    print(f"Saved validation candidate #{row_id}.")
     return 0
 
 

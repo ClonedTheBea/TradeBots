@@ -4,6 +4,7 @@ from data.models import Candle
 from strategy.tuner import (
     TuningConfig,
     generate_overfit_warning,
+    should_promote_parameters,
     split_train_validation,
     tune_strategy_for_symbol,
     tuning_objective,
@@ -148,6 +149,36 @@ class TunerTests(unittest.TestCase):
         self.assertIn("validation trade count too low", warning)
         self.assertIn("validation drawdown too high", warning)
 
+    def test_reject_when_validation_return_negative(self):
+        decision = should_promote_parameters(valid_metrics(validation_return_pct=-1.0))
+
+        self.assertFalse(decision.promote)
+        self.assertIn("Validation return is negative", decision.reasons)
+
+    def test_reject_when_validation_trade_count_below_threshold(self):
+        decision = should_promote_parameters(valid_metrics(validation_trade_count=1))
+
+        self.assertFalse(decision.promote)
+        self.assertIn("Trade count too low (1 < 5)", decision.reasons)
+
+    def test_reject_when_overfit_warning_exists(self):
+        decision = should_promote_parameters(valid_metrics(overfit_warning="warning"))
+
+        self.assertFalse(decision.promote)
+        self.assertIn("Overfit warning triggered", decision.reasons)
+
+    def test_reject_when_train_validation_gap_too_large(self):
+        decision = should_promote_parameters(valid_metrics(train_return_pct=60.0, validation_return_pct=10.0))
+
+        self.assertFalse(decision.promote)
+        self.assertTrue(any("Train/validation return gap too large" in reason for reason in decision.reasons))
+
+    def test_accept_valid_balanced_strategy(self):
+        decision = should_promote_parameters(valid_metrics())
+
+        self.assertTrue(decision.promote)
+        self.assertEqual(decision.reasons, [])
+
 
 class SimpleBacktest:
     def __init__(self, total_return_pct, max_drawdown_pct, win_rate, trade_count):
@@ -155,6 +186,19 @@ class SimpleBacktest:
         self.max_drawdown_pct = max_drawdown_pct
         self.win_rate = win_rate
         self.trades = tuple(object() for _ in range(trade_count))
+
+
+def valid_metrics(**overrides):
+    metrics = {
+        "train_return_pct": 12.0,
+        "validation_return_pct": 8.0,
+        "validation_drawdown_pct": 6.0,
+        "validation_trade_count": 6,
+        "validation_win_rate_pct": 55.0,
+        "overfit_warning": "",
+    }
+    metrics.update(overrides)
+    return metrics
 
 
 if __name__ == "__main__":

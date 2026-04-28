@@ -33,6 +33,21 @@ class WalkForwardValidationResult:
     overfit_warning: str
 
 
+@dataclass(frozen=True)
+class PromotionThresholds:
+    min_validation_return_pct: float = 0.0
+    max_validation_drawdown_pct: float = 15.0
+    min_validation_trade_count: int = 5
+    min_validation_win_rate_pct: float = 40.0
+    max_train_validation_gap_pct: float = 30.0
+
+
+@dataclass(frozen=True)
+class PromotionDecision:
+    promote: bool
+    reasons: list[str]
+
+
 def tune_strategy_for_symbol(
     candles: list[Candle],
     symbol: str,
@@ -102,6 +117,47 @@ def generate_overfit_warning(
     if validation_backtest.max_drawdown_pct > max_validation_drawdown_pct:
         warnings.append("validation drawdown too high")
     return "; ".join(warnings)
+
+
+def should_promote_parameters(
+    metrics: dict[str, Any],
+    thresholds: PromotionThresholds | None = None,
+) -> PromotionDecision:
+    config = thresholds or PromotionThresholds()
+    reasons: list[str] = []
+    validation_return = float(metrics.get("validation_return_pct") or 0)
+    validation_drawdown = float(metrics.get("validation_drawdown_pct") or 0)
+    validation_trade_count = int(metrics.get("validation_trade_count") or 0)
+    validation_win_rate = float(metrics.get("validation_win_rate_pct") or 0)
+    train_return = float(metrics.get("train_return_pct") or 0)
+    overfit_warning = str(metrics.get("overfit_warning") or "").strip()
+
+    if validation_return < config.min_validation_return_pct:
+        reasons.append("Validation return is negative")
+    if validation_trade_count < config.min_validation_trade_count:
+        reasons.append(
+            f"Trade count too low ({validation_trade_count} < {config.min_validation_trade_count})"
+        )
+    if validation_drawdown > config.max_validation_drawdown_pct:
+        reasons.append(
+            f"Validation drawdown too high ({validation_drawdown:.2f}% > {config.max_validation_drawdown_pct:.2f}%)"
+        )
+    if validation_win_rate < config.min_validation_win_rate_pct:
+        reasons.append(
+            f"Validation win rate too low ({validation_win_rate:.2f}% < {config.min_validation_win_rate_pct:.2f}%)"
+        )
+    if overfit_warning:
+        reasons.append("Overfit warning triggered")
+    if train_return > 0 and validation_return < 0:
+        reason = "Train return positive but validation return negative"
+        if reason not in reasons:
+            reasons.append(reason)
+    gap = abs(train_return - validation_return)
+    if gap > config.max_train_validation_gap_pct:
+        reasons.append(
+            f"Train/validation return gap too large ({gap:.2f}% > {config.max_train_validation_gap_pct:.2f}%)"
+        )
+    return PromotionDecision(promote=not reasons, reasons=reasons)
 
 
 def tuning_objective(

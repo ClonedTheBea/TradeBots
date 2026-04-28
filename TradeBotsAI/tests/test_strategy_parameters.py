@@ -107,6 +107,41 @@ class StrategyParameterStorageTests(unittest.TestCase):
         self.assertEqual(loaded["validation_trade_count"], 4)
         self.assertEqual(loaded["overfit_warning"], "")
 
+    def test_latest_candidate_can_be_rejected_without_replacing_active(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with SQLiteStore(Path(tmpdir) / "params.sqlite") as store:
+                store.initialize()
+                store.save_strategy_parameters(validated_params(warning=""), active=True)
+                rejected = validated_params(warning="bad")
+                rejected["promotion_status"] = "rejected"
+                rejected["rejection_reasons"] = ["Overfit warning triggered"]
+                store.save_strategy_parameters(rejected, active=False)
+
+                active = store.get_active_strategy_parameters("BB", "1Day")
+                latest = store.get_latest_strategy_parameters("BB", "1Day")
+
+        self.assertTrue(active["is_active"])
+        self.assertEqual(active["overfit_warning"], "")
+        self.assertFalse(latest["is_active"])
+        self.assertEqual(latest["promotion_status"], "rejected")
+        self.assertEqual(latest["rejection_reasons"], ["Overfit warning triggered"])
+
+    def test_force_promote_overrides_rejection(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with SQLiteStore(Path(tmpdir) / "params.sqlite") as store:
+                store.initialize()
+                rejected = validated_params(warning="bad")
+                rejected["promotion_status"] = "rejected"
+                rejected["rejection_reasons"] = ["Overfit warning triggered"]
+                row_id = store.save_strategy_parameters(rejected, active=False)
+                store.promote_strategy_parameters(row_id)
+
+                active = store.get_active_strategy_parameters("BB", "1Day")
+
+        self.assertEqual(active["id"], row_id)
+        self.assertTrue(active["is_active"])
+        self.assertEqual(active["promotion_status"], "promoted")
+
 
 if __name__ == "__main__":
     unittest.main()
