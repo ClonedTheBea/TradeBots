@@ -16,6 +16,8 @@ class ScreenState:
     cash: float | None
     holdings: float | None
     captured_at: str
+    selected_trade_action: str | None = None
+    slider_state: str | None = None
 
 
 def parse_money(text: str) -> float | None:
@@ -58,6 +60,8 @@ def parse_screen_state(ocr_text: str) -> ScreenState:
         cash=_parse_labeled_money(ocr_text, ("cash", "balance", "money")),
         holdings=_parse_labeled_money(ocr_text, ("holdings", "holding", "position")),
         captured_at=datetime.now().isoformat(timespec="seconds"),
+        selected_trade_action=_parse_selected_trade_action(ocr_text),
+        slider_state=_parse_slider_state(ocr_text),
     )
 
 
@@ -98,4 +102,18 @@ def _parse_unlabeled_price_money(text: str) -> float | None:
         value = parse_money(line)
         if value is not None:
             return value
+    return None
+
+
+def _parse_selected_trade_action(text: str) -> str | None:
+    selected_match = re.search(r"\bselected\s*[:#-]?\s*(buy|sell)\b", text, re.I)
+    if selected_match:
+        return selected_match.group(1).upper()
+    return None
+
+
+def _parse_slider_state(text: str) -> str | None:
+    slider_match = re.search(r"\bslider\s*[:#-]?\s*([A-Za-z0-9% ._-]+)", text, re.I)
+    if slider_match:
+        return slider_match.group(1).strip()
     return None

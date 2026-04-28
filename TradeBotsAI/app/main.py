@@ -90,6 +90,40 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Append even when the parsed game date matches the last CSV row",
     )
+    auto_trade_parser = subparsers.add_parser(
+        "auto-trade",
+        help="Simulation-only auto trade loop using advisory signals",
+    )
+    auto_trade_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Save debug screenshots and print raw OCR/parsed fields",
+    )
+    auto_trade_parser.add_argument(
+        "--csv",
+        default=str(DEFAULT_LIVE_CSV),
+        help="Close-only CSV path to append captured prices",
+    )
+    auto_trade_parser.add_argument(
+        "--symbol",
+        default="GAME",
+        help="Optional symbol/name for the auto-trade scenario",
+    )
+    auto_trade_parser.add_argument(
+        "--max-steps",
+        type=int,
+        help="Stop after this many STEP clicks",
+    )
+    auto_trade_parser.add_argument(
+        "--allow-duplicates",
+        action="store_true",
+        help="Append even when the parsed game date matches the last CSV row",
+    )
+    auto_trade_parser.add_argument(
+        "--confirm-auto-trade",
+        action="store_true",
+        help="Allow simulation BUY/SELL/PROCESS TRADE clicks when config also enables auto trade",
+    )
     mouse_pos_parser = subparsers.add_parser(
         "mouse-pos",
         help="Print the current mouse position every 0.5 seconds for STEP calibration",
@@ -99,6 +133,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Only print coordinates; do not save the last position for auto-step",
     )
+    for command_name, help_text in (
+        ("set-buy-button", "Save the current mouse position as the BUY button"),
+        ("set-sell-button", "Save the current mouse position as the SELL button"),
+        ("set-process-trade-button", "Save the current mouse position as PROCESS TRADE"),
+        ("set-slider-right", "Save the current mouse position as the slider far-right point"),
+        ("set-step-button", "Save the current mouse position as the STEP button"),
+    ):
+        subparsers.add_parser(command_name, help=help_text)
 
     parser.add_argument("--csv", help="Path to OHLCV or close-only candle CSV data")
     parser.add_argument(
@@ -171,11 +213,41 @@ def main() -> int:
         except (RuntimeError, ValueError) as exc:
             print(exc)
             return 1
+    if args.command == "auto-trade":
+        from app.automation import run_auto_trade
+
+        try:
+            return run_auto_trade(
+                csv_path=args.csv,
+                symbol=args.symbol,
+                max_steps=args.max_steps,
+                allow_duplicates=args.allow_duplicates,
+                debug=args.debug,
+                confirm_auto_trade=args.confirm_auto_trade,
+            )
+        except (RuntimeError, ValueError) as exc:
+            print(exc)
+            return 1
     if args.command == "mouse-pos":
         from app.automation import run_mouse_position_printer
 
         try:
             return run_mouse_position_printer(save=not args.no_save)
+        except RuntimeError as exc:
+            print(exc)
+            return 1
+    coordinate_commands = {
+        "set-buy-button": "buy_button",
+        "set-sell-button": "sell_button",
+        "set-process-trade-button": "process_trade",
+        "set-slider-right": "slider_right",
+        "set-step-button": "step_button",
+    }
+    if args.command in coordinate_commands:
+        from app.automation import save_current_mouse_position
+
+        try:
+            return save_current_mouse_position(coordinate_commands[args.command])
         except RuntimeError as exc:
             print(exc)
             return 1
@@ -288,6 +360,8 @@ def run_watch_screen(csv_path: str, symbol: str, hotkey: str, debug: bool) -> in
                 print(f"  gain_percent={state.gain_percent}")
                 print(f"  cash={state.cash}")
                 print(f"  holdings={state.holdings}")
+                print(f"  selected_trade_action={state.selected_trade_action}")
+                print(f"  slider_state={state.slider_state}")
 
             if state.price is None:
                 print("Could not parse current price from OCR text")

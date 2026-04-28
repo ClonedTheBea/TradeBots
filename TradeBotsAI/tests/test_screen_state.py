@@ -25,7 +25,10 @@ class ScreenStateParserTests(unittest.TestCase):
         self.assertIsNone(parse_game_date("2026-04-28"))
 
     def test_parse_screen_state_from_clean_top_hud(self):
-        text = "Mar 11 Yr 1 Price: $28.99 (3.24%) Cash: $495.00 Holdings: $0.00"
+        text = (
+            "Mar 11 Yr 1 Price: $28.99 (3.24%) Cash: $495.00 Holdings: $0.00 "
+            "Selected: BUY Slider: 100%"
+        )
 
         state = parse_screen_state(text)
 
@@ -34,6 +37,8 @@ class ScreenStateParserTests(unittest.TestCase):
         self.assertEqual(state.gain_percent, 3.24)
         self.assertEqual(state.cash, 495.0)
         self.assertEqual(state.holdings, 0.0)
+        self.assertEqual(state.selected_trade_action, "BUY")
+        self.assertEqual(state.slider_state, "100%")
         self.assertEqual(state.raw_text, text)
         self.assertIsNotNone(state.captured_at)
 

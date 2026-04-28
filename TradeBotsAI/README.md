@@ -174,6 +174,55 @@ the price is not appended again. To override that:
 python -m app.main auto-step --allow-duplicates --debug
 ```
 
+## Simulation Auto-Trade Mode
+
+Auto-trade mode is for the Trade Bots game only. It does not support real-money
+trading or brokerage integration.
+
+It captures/OCRs the screen, appends the current price, runs the advisory
+engine, optionally clicks BUY or SELL, moves the slider to the configured
+far-right point, clicks PROCESS TRADE, then clicks STEP.
+
+By default, it is a dry run and will not click BUY, SELL, or PROCESS TRADE:
+
+```powershell
+python -m app.main auto-trade --max-steps 50 --debug
+```
+
+To calibrate all required UI points, hover over each button/slider position and
+run the matching command:
+
+```powershell
+python -m app.main set-buy-button
+python -m app.main set-sell-button
+python -m app.main set-process-trade-button
+python -m app.main set-slider-right
+python -m app.main set-step-button
+```
+
+The coordinates are saved to:
+
+```text
+data/automation_config.json
+```
+
+Actual simulation trade clicks require both:
+- `AUTO_TRADE_ENABLED = True` in `game_interface/config.py`, or `"auto_trade_enabled": true` in `data/automation_config.json`
+- the CLI flag `--confirm-auto-trade`
+
+Example enabled command:
+
+```powershell
+python -m app.main auto-trade --max-steps 50 --debug --confirm-auto-trade
+```
+
+Safety rules:
+- BUY is skipped if holdings are already greater than zero.
+- SELL is skipped if holdings are zero.
+- HOLD never clicks trade controls.
+- The bot never shorts.
+- Stop with `ESC` or `Ctrl+C`.
+
 ## Windows OCR Setup
 
 Install Python dependencies:
