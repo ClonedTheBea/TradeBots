@@ -1,0 +1,4 @@
+# One ticker per line. Blank lines and comments are ignored.
+AAPL
+MSFT
+BB

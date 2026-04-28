@@ -19,6 +19,7 @@ import threading
 from typing import Any, Callable
 from uuid import uuid4
 
+from app.default_symbols import default_symbols_text
 from app.risk import RiskSettings, total_exposure_value
 from storage.sqlite_store import SQLiteStore
 
@@ -75,7 +76,7 @@ class DashboardState:
         self._job_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._scheduler_thread: threading.Thread | None = None
-        self.scheduler_settings = SchedulerSettings()
+        self.scheduler_settings = SchedulerSettings(symbols=default_symbols_text())
         self.jobs: dict[str, dict[str, Any]] = {}
 
     def scheduler_running(self) -> bool:
@@ -456,7 +457,7 @@ def _capture_command_output(
 
 def _settings_from_payload(payload: dict[str, Any]) -> SchedulerSettings:
     return SchedulerSettings(
-        symbols=str(payload.get("symbols") or "AAPL,MSFT,BB"),
+        symbols=str(payload.get("symbols") or default_symbols_text()),
         interval_minutes=float(payload.get("interval_minutes") or 15),
         confidence_threshold=float(payload.get("confidence_threshold") or 0.65),
         market_hours_only=bool(payload.get("market_hours_only")),

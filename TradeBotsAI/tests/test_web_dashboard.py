@@ -37,6 +37,20 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("scheduler", body)
         self.assertIn("risk", body)
 
+    def test_scheduler_default_symbols_use_loaded_config(self):
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "web.server.default_symbols_text",
+            return_value="BB,MSFT",
+        ):
+            app = create_app(db_path=str(Path(tmp) / "test.sqlite"))
+            client = TestClient(app)
+
+            response = client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(app.state.dashboard.scheduler_settings.symbols, "BB,MSFT")
+        self.assertIn('value="BB,MSFT"', response.text)
+
     def test_logs_endpoint_returns_logs(self):
         with tempfile.TemporaryDirectory() as tmp:
             app = create_app(db_path=str(Path(tmp) / "test.sqlite"))

@@ -329,6 +329,10 @@ server. By default it is a dry run and will not submit paper orders:
 python -m app.main run-scheduler --symbols AAPL,MSFT,TSLA --interval-minutes 15 --confidence-threshold 0.65
 ```
 
+If `--symbols` is omitted, the scheduler loads defaults from
+`config/batch_symbols.txt`. If that file is missing or contains no symbols, it
+falls back to `AAPL,MSFT,BB`.
+
 To allow Alpaca paper order submission, pass `--confirm-paper`:
 
 ```powershell
@@ -458,6 +462,63 @@ If Optuna is missing, install dependencies:
 
 ```powershell
 python -m pip install -r requirements.txt
+```
+
+### Batch Optimisation
+
+`batch-optimise` is a MarketStack-powered validation pipeline for running a
+watchlist through repeatable backtest/tune/validate cycles. It does not submit
+Alpaca paper orders and does not touch the paper-trading scheduler.
+
+Edit the default watchlist in:
+
+```text
+config/batch_symbols.txt
+```
+
+Use one symbol per line. Blank lines and lines beginning with `#` are ignored.
+This same file controls default tickers for batch optimisation, `run-scheduler`
+when `--symbols` is omitted, and the web dashboard scheduler input.
+
+Run manually with explicit symbols:
+
+```powershell
+python -m app.main batch-optimise --symbols AAPL,MSFT,BB --timeframe 1Day --lookback 365 --trials 2000 --train-ratio 0.7
+```
+
+Or run from `config/batch_symbols.txt`:
+
+```powershell
+python -m app.main batch-optimise --timeframe 1Day --lookback 365 --trials 2000 --continue-on-error
+```
+
+For each symbol, the batch run fetches MarketStack candles using the existing
+cache, backtests the current active parameters or defaults, validates/tunes,
+backtests again, validates/tunes again, then runs a final backtest. Strict
+promotion safeguards are always used; rejected candidates stay inactive and the
+current active parameters remain in place. Use `--refresh-data` to bypass the
+MarketStack cache for the batch fetch.
+
+Outputs are written to `reports/batch_optimise/`:
+
+```text
+YYYYMMDD_HHMMSS_batch.log
+YYYYMMDD_HHMMSS_summary.csv
+```
+
+For Windows Task Scheduler, use:
+
+```text
+scripts\run_batch_optimise.bat
+```
+
+Create a scheduled task with the project folder as the working directory and
+the BAT file as the action. A practical schedule is once daily after market
+close, so the run uses completed daily candles and avoids wasteful polling.
+Task output is appended to:
+
+```text
+logs\batch_optimise_task.log
 ```
 
 ### Alpaca IEX vs SIP

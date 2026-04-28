@@ -12,6 +12,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from app.capture import DEFAULT_LIVE_CSV, run_capture_once
+from app.default_symbols import load_default_symbols
 from app.output import print_advisory_output
 from app.recorder import record_manual_step
 from app.risk import RiskSettings, RiskSnapshot, evaluate_buy_guardrails, total_exposure_value
@@ -200,7 +201,7 @@ def parse_args() -> argparse.Namespace:
         "run-scheduler",
         help="Run repeated Alpaca paper-trading scans for server use",
     )
-    scheduler_parser.add_argument("--symbols", required=True, help="Comma-separated symbols, e.g. AAPL,MSFT,TSLA")
+    scheduler_parser.add_argument("--symbols", help="Comma-separated symbols, e.g. AAPL,MSFT,TSLA")
     scheduler_parser.add_argument("--interval-minutes", type=float, default=15)
     scheduler_parser.add_argument("--confidence-threshold", type=float, default=0.65)
     scheduler_parser.add_argument("--qty", type=float, default=1.0)
@@ -296,6 +297,21 @@ def parse_args() -> argparse.Namespace:
                 "--output-csv",
                 help="Optional CSV path to write fetched candles",
             )
+
+    batch_parser = subparsers.add_parser(
+        "batch-optimise",
+        help="Run scheduled MarketStack batch optimisation and validation",
+    )
+    batch_parser.add_argument("--symbols")
+    batch_parser.add_argument("--timeframe", default="1Day")
+    batch_parser.add_argument("--lookback", type=int, default=365)
+    batch_parser.add_argument("--trials", type=int, default=2000)
+    batch_parser.add_argument("--train-ratio", type=float, default=0.7)
+    batch_parser.add_argument("--refresh-data", action="store_true")
+    batch_parser.add_argument("--continue-on-error", action="store_true")
+    batch_parser.add_argument("--output-dir", default="reports/batch_optimise")
+    batch_parser.add_argument("--symbol-config", default="config/batch_symbols.txt")
+    batch_parser.add_argument("--db", default="tradebots_ai.sqlite")
 
     parser.add_argument("--csv", help="Path to OHLCV or close-only candle CSV data")
     parser.add_argument(
@@ -547,6 +563,19 @@ def main() -> int:
             args.date_from,
             args.date_to,
             args.refresh,
+            args.db,
+        )
+    if args.command == "batch-optimise":
+        return run_batch_optimise_command(
+            args.symbols,
+            args.symbol_config,
+            args.timeframe,
+            args.lookback,
+            args.trials,
+            args.train_ratio,
+            args.refresh_data,
+            args.continue_on_error,
+            args.output_dir,
             args.db,
         )
 
@@ -810,6 +839,40 @@ def run_marketstack_backtest(
     return 0
 
 
+def run_batch_optimise_command(
+    symbols_text: str | None,
+    symbol_config: str,
+    timeframe: str,
+    lookback: int,
+    trials: int,
+    train_ratio: float,
+    refresh_data: bool,
+    continue_on_error: bool,
+    output_dir: str,
+    db_path: str,
+) -> int:
+    from app.batch_optimise import BatchOptimiseConfig, load_batch_symbols, parse_symbol_list, run_batch_optimise
+
+    try:
+        symbols = parse_symbol_list(symbols_text) if symbols_text else load_batch_symbols(symbol_config)
+        config = BatchOptimiseConfig(
+            symbols=symbols,
+            timeframe=timeframe,
+            lookback=lookback,
+            trials=trials,
+            train_ratio=train_ratio,
+            refresh_data=refresh_data,
+            continue_on_error=continue_on_error,
+            output_dir=output_dir,
+            db_path=db_path,
+        )
+        exit_code, _log_path, _summary_path = run_batch_optimise(config)
+        return exit_code
+    except (RuntimeError, ValueError, OSError) as exc:
+        print(exc)
+        return 1
+
+
 def _fetch_marketstack_candles(
     symbol: str,
     timeframe: str,
@@ -939,7 +1002,7 @@ def run_alpaca_paper_trade(
 
 
 def run_scheduler(
-    symbols_text: str,
+    symbols_text: str | None,
     interval_minutes: float,
     confidence_threshold: float,
     qty: float,
@@ -962,7 +1025,7 @@ def run_scheduler(
         return 1
 
     try:
-        symbols = _parse_symbol_list(None, symbols_text)
+        symbols = _parse_symbol_list(None, symbols_text) if symbols_text else load_default_symbols()
         client = AlpacaPaperClient.from_env()
     except (RuntimeError, ValueError) as exc:
         print(exc)
