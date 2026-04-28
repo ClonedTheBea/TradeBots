@@ -21,7 +21,13 @@ class Backtester:
         self.signal_engine = signal_engine
         self.config = config
 
-    def run(self, candles: list[Candle], symbol: str = "UNKNOWN") -> BacktestResult:
+    def run(
+        self,
+        candles: list[Candle],
+        symbol: str = "UNKNOWN",
+        signal_store: object | None = None,
+        session_id: str | None = None,
+    ) -> BacktestResult:
         if not candles:
             raise ValueError("Cannot backtest without candles")
 
@@ -89,7 +95,7 @@ class Backtester:
         win_rate = wins / len(trades) if trades else 0.0
         average_profit = sum(trade.profit_loss for trade in trades) / len(trades) if trades else 0.0
 
-        return BacktestResult(
+        result = BacktestResult(
             symbol=symbol,
             starting_cash=self.config.starting_cash,
             ending_cash=round(ending_cash, 2),
@@ -100,6 +106,9 @@ class Backtester:
             average_profit_per_trade=round(average_profit, 2),
             max_drawdown_pct=round(_max_drawdown_pct(equity_curve), 4),
         )
+        if signal_store is not None:
+            signal_store.save_signals_bulk(result.signals, session_id=session_id)
+        return result
 
 
 def _close_trade(

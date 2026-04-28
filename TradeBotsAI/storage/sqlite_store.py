@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 import json
 from types import TracebackType
+from typing import Any, Iterable
 
 from data.models import BacktestResult, Signal, Trade
 
@@ -42,11 +43,14 @@ class SQLiteStore:
             """
             CREATE TABLE IF NOT EXISTS signals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
                 symbol TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 action TEXT NOT NULL,
                 confidence REAL NOT NULL,
                 score REAL NOT NULL DEFAULT 0,
+                close_price REAL NOT NULL DEFAULT 0,
+                reasons_json TEXT NOT NULL DEFAULT '[]',
                 reasons TEXT NOT NULL DEFAULT '[]',
                 reason TEXT NOT NULL,
                 close REAL NOT NULL,
@@ -82,7 +86,10 @@ class SQLiteStore:
             );
             """
         )
+        self._ensure_column("signals", "session_id", "TEXT")
         self._ensure_column("signals", "score", "REAL NOT NULL DEFAULT 0")
+        self._ensure_column("signals", "close_price", "REAL NOT NULL DEFAULT 0")
+        self._ensure_column("signals", "reasons_json", "TEXT NOT NULL DEFAULT '[]'")
         self._ensure_column("signals", "reasons", "TEXT NOT NULL DEFAULT '[]'")
         self._ensure_column("backtest_results", "signal_count", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column(
@@ -92,26 +99,117 @@ class SQLiteStore:
         )
         conn.commit()
 
-    def save_signal(self, signal: Signal) -> None:
+    def save_signal(self, signal: Signal, session_id: str | None = None) -> None:
         self._conn().execute(
             """
             INSERT INTO signals (
-                symbol, timestamp, action, confidence, score, reasons, reason, close
+                session_id, symbol, timestamp, close_price, action, score,
+                confidence, reasons_json, reasons, reason, close
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                session_id,
                 signal.symbol,
                 signal.timestamp,
+                signal.close,
                 signal.action,
-                signal.confidence,
                 signal.score,
-                json.dumps(list(signal.reasons)),
+                signal.confidence,
+                _reasons_json(signal),
+                _reasons_json(signal),
                 signal.reason,
                 signal.close,
             ),
         )
         self._conn().commit()
+
+    def save_signals_bulk(
+        self,
+        signals: Iterable[Signal],
+        session_id: str | None = None,
+    ) -> None:
+        rows = [
+            (
+                session_id,
+                signal.symbol,
+                signal.timestamp,
+                signal.close,
+                signal.action,
+                signal.score,
+                signal.confidence,
+                _reasons_json(signal),
+                _reasons_json(signal),
+                signal.reason,
+                signal.close,
+            )
+            for signal in signals
+        ]
+        if not rows:
+            return
+
+        self._conn().executemany(
+            """
+            INSERT INTO signals (
+                session_id, symbol, timestamp, close_price, action, score,
+                confidence, reasons_json, reasons, reason, close
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        self._conn().commit()
+
+    def get_recent_signals(
+        self,
+        limit: int = 20,
+        session_id: str | None = None,
+        symbol: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if symbol is not None:
+            clauses.append("symbol = ?")
+            params.append(symbol)
+
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        cursor = self._conn().execute(
+            f"""
+            SELECT
+                id, session_id, timestamp, symbol, close_price, action,
+                score, confidence, reasons_json, created_at
+            FROM signals
+            {where_sql}
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (*params, limit),
+        )
+        rows = []
+        for row in cursor.fetchall():
+            reasons_json = row[8]
+            rows.append(
+                {
+                    "id": row[0],
+                    "session_id": row[1],
+                    "timestamp": row[2],
+                    "symbol": row[3],
+                    "close_price": row[4],
+                    "action": row[5],
+                    "score": row[6],
+                    "confidence": row[7],
+                    "reasons_json": reasons_json,
+                    "reasons": json.loads(reasons_json),
+                    "created_at": row[9],
+                }
+            )
+        return rows
 
     def save_trade(self, trade: Trade) -> None:
         self._conn().execute(
@@ -170,3 +268,7 @@ class SQLiteStore:
         }
         if column_name not in columns:
             self._conn().execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
+def _reasons_json(signal: Signal) -> str:
+    return json.dumps(list(signal.reasons))

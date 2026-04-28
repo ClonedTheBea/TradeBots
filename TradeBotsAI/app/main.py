@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from uuid import uuid4
 
 from data.csv_loader import load_candles_from_csv
 from decision.advisor import build_advice
@@ -35,24 +36,29 @@ def main() -> int:
 
     signal_engine = SignalEngine(SignalConfig())
     signal = signal_engine.latest_signal(candles, symbol=args.symbol)
-
-    backtester = Backtester(signal_engine, BacktestConfig())
-    result = backtester.run(candles, symbol=args.symbol)
-
-    advice = build_advice(signal, result)
+    session_id = uuid4().hex
 
     with SQLiteStore(args.db) as store:
         store.initialize()
-        for historical_signal in result.signals:
-            store.save_signal(historical_signal)
+        store.save_signal(signal, session_id=session_id)
+        backtester = Backtester(signal_engine, BacktestConfig())
+        result = backtester.run(
+            candles,
+            symbol=args.symbol,
+            signal_store=store,
+            session_id=session_id,
+        )
         store.save_backtest_result(result)
         for trade in result.trades:
             store.save_trade(trade)
+
+    advice = build_advice(signal, result)
 
     print(f"Decision: {advice.action}")
     print(f"Confidence: {advice.confidence:.2f}")
     print(f"Score: {signal.score:.2f}")
     print(f"Reason: {advice.reason}")
+    print(f"Session: {session_id}")
     print(
         "Backtest: "
         f"start=${result.starting_cash:.2f} "
