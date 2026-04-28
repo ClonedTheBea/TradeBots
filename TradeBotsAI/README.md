@@ -364,6 +364,32 @@ Check current local risk state:
 python -m app.main risk-status
 ```
 
+## Local Web Dashboard
+
+Run the local-only dashboard when you want controls, reports, validation, and
+console-style logs in a browser:
+
+```powershell
+python -m app.main web --port 8765
+```
+
+Open:
+
+```text
+http://127.0.0.1:8765
+```
+
+The dashboard binds to `127.0.0.1` by default. You can choose another local port
+if one is already in use:
+
+```powershell
+python -m app.main web --host 127.0.0.1 --port 8766
+```
+
+The web UI stays paper/backtest only. Scheduler controls default to dry-run, and
+Alpaca paper orders require checking the confirm-paper box. Live trading is not
+supported and API keys are not displayed in the UI or command-style logs.
+
 ## Performance Reporting
 
 Completed trades are tracked from BUY entry to SELL exit. The report ignores

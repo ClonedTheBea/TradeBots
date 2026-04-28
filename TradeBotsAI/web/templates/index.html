@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="grid two">
+  <article class="panel">
+    <h2>Status</h2>
+    <div id="status" class="stack muted">Loading...</div>
+  </article>
+  <article class="panel">
+    <h2>Controls</h2>
+    <div class="form-grid">
+      <label>Symbols <input id="symbols" value="{{ settings.symbols }}"></label>
+      <label>Interval minutes <input id="interval_minutes" type="number" step="0.1" value="{{ settings.interval_minutes }}"></label>
+      <label>Confidence threshold <input id="confidence_threshold" type="number" step="0.01" min="0" max="1" value="{{ settings.confidence_threshold }}"></label>
+      <label>Qty <input id="qty" type="number" step="0.01" min="0.01" value="{{ settings.qty }}"></label>
+      <label>Timeframe <input id="timeframe" value="{{ settings.timeframe }}"></label>
+      <label>Lookback <input id="lookback" type="number" min="1" value="{{ settings.lookback }}"></label>
+    </div>
+    <div class="checks">
+      <label><input id="market_hours_only" type="checkbox"> Market hours only</label>
+      <label><input id="confirm_paper" type="checkbox"> Confirm Alpaca paper orders</label>
+      <label><input id="top_only" type="checkbox"> Top signal only</label>
+    </div>
+    <div class="actions">
+      <button onclick="startScheduler()">Start scheduler</button>
+      <button onclick="stopScheduler()">Stop scheduler</button>
+      <button onclick="runScan()">Run one scan</button>
+    </div>
+  </article>
+</section>
+
+<section class="grid two">
+  <article class="panel">
+    <h2>Validation</h2>
+    <div class="form-grid">
+      <label>Symbol <input id="validation_symbol" value="BB"></label>
+      <label>Timeframe <input id="validation_timeframe" value="1Day"></label>
+      <label>Lookback <input id="validation_lookback" type="number" value="365"></label>
+      <label>Trials <input id="validation_trials" type="number" value="100"></label>
+      <label>Train ratio <input id="validation_train_ratio" type="number" step="0.01" value="0.7"></label>
+    </div>
+    <button onclick="validateSymbol()">Validate</button>
+    <pre id="validation_result" class="output"></pre>
+  </article>
+  <article class="panel">
+    <h2>Parameters</h2>
+    <div class="inline-form">
+      <input id="params_symbol" value="BB">
+      <input id="params_timeframe" value="1Day">
+      <button onclick="loadParameters()">Load</button>
+    </div>
+    <pre id="parameters" class="output"></pre>
+  </article>
+</section>
+
+<section class="grid two">
+  <article class="panel">
+    <h2>Reports</h2>
+    <button onclick="loadReports()">Refresh reports</button>
+    <pre id="reports" class="output"></pre>
+  </article>
+  <article class="panel console-panel">
+    <h2>Console</h2>
+    <pre id="console" class="console"></pre>
+  </article>
+</section>
+
+<script>
+function schedulerPayload() {
+  return {
+    symbols: document.getElementById("symbols").value,
+    interval_minutes: Number(document.getElementById("interval_minutes").value),
+    confidence_threshold: Number(document.getElementById("confidence_threshold").value),
+    qty: Number(document.getElementById("qty").value),
+    timeframe: document.getElementById("timeframe").value,
+    lookback: Number(document.getElementById("lookback").value),
+    market_hours_only: document.getElementById("market_hours_only").checked,
+    confirm_paper: document.getElementById("confirm_paper").checked,
+    top_only: document.getElementById("top_only").checked
+  };
+}
+
+async function postJson(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(payload || {})
+  });
+  return response.json();
+}
+
+async function refreshStatus() {
+  const data = await (await fetch("/api/status")).json();
+  const settings = data.scheduler.settings;
+  document.getElementById("status").innerHTML = `
+    <strong>${data.scheduler.running ? "Running" : "Stopped"}</strong>
+    <span>Symbols: ${settings.symbols}</span>
+    <span>Interval: ${settings.interval_minutes} minutes</span>
+    <span>Confidence: ${settings.confidence_threshold}</span>
+    <span>Open positions: ${data.risk.open_position_count}</span>
+    <span>Exposure: $${data.risk.exposure_value} (${data.risk.exposure_pct}%)</span>
+    <span>Daily realised PnL: $${data.risk.daily_realized_pnl}</span>
+    <span>Latest signals: ${data.latest_signals.map(s => `${s.symbol} ${s.action} (${Number(s.confidence).toFixed(2)})`).join(", ") || "none"}</span>
+  `;
+}
+
+async function refreshLogs() {
+  const data = await (await fetch("/api/logs")).json();
+  document.getElementById("console").textContent = data.logs.join("\n");
+}
+
+async function startScheduler() {
+  await postJson("/api/scheduler/start", schedulerPayload());
+  await refreshStatus();
+  await refreshLogs();
+}
+
+async function stopScheduler() {
+  await postJson("/api/scheduler/stop");
+  await refreshStatus();
+  await refreshLogs();
+}
+
+async function runScan() {
+  await postJson("/api/scan", schedulerPayload());
+  await refreshLogs();
+}
+
+async function validateSymbol() {
+  const data = await postJson("/api/validate", {
+    symbol: document.getElementById("validation_symbol").value,
+    timeframe: document.getElementById("validation_timeframe").value,
+    lookback: Number(document.getElementById("validation_lookback").value),
+    trials: Number(document.getElementById("validation_trials").value),
+    train_ratio: Number(document.getElementById("validation_train_ratio").value)
+  });
+  const params = data.parameters || {};
+  document.getElementById("validation_result").textContent =
+    `${data.output || data.message || ""}\n\nPromotion: ${params.promotion_status || "unknown"}\nReasons: ${(params.rejection_reasons || []).join("; ") || "none"}`;
+  await refreshLogs();
+}
+
+async function loadParameters() {
+  const symbol = encodeURIComponent(document.getElementById("params_symbol").value);
+  const timeframe = encodeURIComponent(document.getElementById("params_timeframe").value);
+  const data = await (await fetch(`/api/parameters?symbol=${symbol}&timeframe=${timeframe}`)).json();
+  document.getElementById("parameters").textContent = JSON.stringify(data, null, 2);
+}
+
+async function loadReports() {
+  const data = await (await fetch("/api/reports?last=20")).json();
+  document.getElementById("reports").textContent =
+    `${data.performance_report}\n\nRisk status:\n${JSON.stringify(data.risk_status, null, 2)}\n\nRecent completed trades:\n${JSON.stringify(data.recent_completed_trades, null, 2)}`;
+}
+
+refreshStatus();
+refreshLogs();
+loadReports();
+setInterval(refreshStatus, 5000);
+setInterval(refreshLogs, 2000);
+</script>
+{% endblock %}

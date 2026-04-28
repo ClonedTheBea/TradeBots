@@ -212,6 +212,14 @@ def parse_args() -> argparse.Namespace:
     _add_risk_arguments(scheduler_parser)
     scheduler_parser.add_argument("--db", default="tradebots_ai.sqlite")
 
+    web_parser = subparsers.add_parser(
+        "web",
+        help="Run the local-only TradeBotsAI dashboard",
+    )
+    web_parser.add_argument("--host", default="127.0.0.1")
+    web_parser.add_argument("--port", type=int, default=8765)
+    web_parser.add_argument("--db", default="tradebots_ai.sqlite")
+
     risk_status_parser = subparsers.add_parser(
         "risk-status",
         help="Show portfolio-level paper-trading risk status",
@@ -475,6 +483,8 @@ def main() -> int:
             _risk_settings_from_args(args),
             args.db,
         )
+    if args.command == "web":
+        return run_web_dashboard(args.host, args.port, args.db)
     if args.command == "performance-report":
         return run_performance_report(args.db, args.last, args.since)
     if args.command == "tune-symbol":
@@ -1015,6 +1025,25 @@ def run_performance_report(db_path: str, last: int | None, since_days: int | Non
 
     report = _build_performance_report(trades)
     print(report)
+    return 0
+
+
+def run_web_dashboard(host: str, port: int, db_path: str) -> int:
+    try:
+        import uvicorn
+        from web.server import create_app
+    except ImportError as exc:
+        print(f"Web dashboard dependencies are missing: {exc}")
+        print("Install requirements.txt, then run the web command again.")
+        return 1
+
+    if host == "0.0.0.0":
+        print("Refusing to bind dashboard to 0.0.0.0. Use a loopback host such as 127.0.0.1.")
+        return 1
+
+    print(f"Starting local TradeBotsAI dashboard at http://{host}:{port}")
+    print("Paper/backtest only. Live trading is not supported.")
+    uvicorn.run(create_app(db_path=db_path), host=host, port=port)
     return 0
 
 
