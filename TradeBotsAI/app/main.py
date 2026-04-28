@@ -26,6 +26,25 @@ def parse_args() -> argparse.Namespace:
         default="UNKNOWN",
         help="Optional symbol/name for the imported scenario",
     )
+    parser.add_argument(
+        "--optimise",
+        "--optimize",
+        action="store_true",
+        help="Run Optuna strategy optimisation instead of normal advisory mode",
+    )
+    parser.add_argument(
+        "--optimisation-trials",
+        "--optimization-trials",
+        type=int,
+        default=50,
+        help="Number of Optuna trials to run when optimisation is enabled",
+    )
+    parser.add_argument(
+        "--optimisation-output",
+        "--optimization-output",
+        default="best_strategy_params.json",
+        help="JSON file path for best optimisation parameters",
+    )
     return parser.parse_args()
 
 
@@ -33,6 +52,34 @@ def main() -> int:
     args = parse_args()
     csv_path = Path(args.csv)
     candles = load_candles_from_csv(csv_path)
+
+    if args.optimise:
+        from strategy.optimiser import OptimisationConfig, optimise_strategy
+
+        try:
+            optimisation = optimise_strategy(
+                candles,
+                symbol=args.symbol,
+                config=OptimisationConfig(
+                    trials=args.optimisation_trials,
+                    output_path=args.optimisation_output,
+                ),
+            )
+        except RuntimeError as exc:
+            print(exc)
+            return 1
+
+        print("Optimisation complete")
+        print(f"Best objective: {optimisation.best_value:.4f}")
+        print(f"Best params: {optimisation.best_params}")
+        print(
+            "Best backtest: "
+            f"return={optimisation.best_backtest.total_return_pct:.2f}% "
+            f"max_drawdown={optimisation.best_backtest.max_drawdown_pct:.2f}% "
+            f"trades={len(optimisation.best_backtest.trades)}"
+        )
+        print(f"Saved best parameters to: {Path(optimisation.output_path).resolve()}")
+        return 0
 
     signal_engine = SignalEngine(SignalConfig())
     signal = signal_engine.latest_signal(candles, symbol=args.symbol)
@@ -55,7 +102,8 @@ def main() -> int:
     advice = build_advice(signal, result)
 
     print(f"Decision: {advice.action}")
-    print(f"Confidence: {advice.confidence:.2f}")
+    print(f"Raw Confidence: {advice.raw_confidence:.2f}")
+    print(f"Adjusted Confidence: {advice.adjusted_confidence:.2f}")
     print(f"Score: {signal.score:.2f}")
     print(f"Reason: {advice.reason}")
     print(f"Session: {session_id}")

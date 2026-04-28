@@ -16,6 +16,8 @@ class SignalConfig:
     rsi_buy_threshold: float = 30.0
     rsi_sell_threshold: float = 70.0
     bollinger_period: int = 20
+    buy_score_threshold: float = 3.0
+    sell_score_threshold: float = -3.0
     max_score: float = 6.0
 
 
@@ -89,7 +91,11 @@ class SignalEngine:
             else:
                 reasons.append("Bollinger Bands: price is inside bands (0)")
 
-        action = _score_to_action(score)
+        action = _score_to_action(
+            score,
+            self.config.buy_score_threshold,
+            self.config.sell_score_threshold,
+        )
         confidence = min(abs(score) / self.config.max_score, 1.0)
 
         return Signal(
@@ -104,9 +110,13 @@ class SignalEngine:
         )
 
 
-def _score_to_action(score: float) -> str:
-    if score >= 3.0:
+def _score_to_action(
+    score: float,
+    buy_score_threshold: float = 3.0,
+    sell_score_threshold: float = -3.0,
+) -> str:
+    if score >= buy_score_threshold:
         return "BUY"
-    if score <= -3.0:
+    if score <= sell_score_threshold:
         return "SELL"
     return "HOLD"

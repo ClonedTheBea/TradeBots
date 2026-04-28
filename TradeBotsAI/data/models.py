@@ -57,4 +57,6 @@ class BacktestResult:
 class Advice:
     action: str
     confidence: float
+    raw_confidence: float
+    adjusted_confidence: float
     reason: str
