@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from app.capture import DEFAULT_LIVE_CSV, run_capture_once
 from app.output import print_advisory_output
 from app.recorder import record_manual_step
+from app.risk import RiskSettings, RiskSnapshot, evaluate_buy_guardrails, total_exposure_value
 from data.csv_loader import load_candles_from_csv
 from decision.advisor import build_advice
 from storage.sqlite_store import SQLiteStore
@@ -192,6 +193,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Only trade the highest-confidence eligible signal",
     )
+    _add_risk_arguments(alpaca_trade_parser)
     alpaca_trade_parser.add_argument("--db", default="tradebots_ai.sqlite")
 
     scheduler_parser = subparsers.add_parser(
@@ -207,7 +209,15 @@ def parse_args() -> argparse.Namespace:
     scheduler_parser.add_argument("--confirm-paper", action="store_true")
     scheduler_parser.add_argument("--top-only", action="store_true")
     scheduler_parser.add_argument("--market-hours-only", action="store_true")
+    _add_risk_arguments(scheduler_parser)
     scheduler_parser.add_argument("--db", default="tradebots_ai.sqlite")
+
+    risk_status_parser = subparsers.add_parser(
+        "risk-status",
+        help="Show portfolio-level paper-trading risk status",
+    )
+    _add_risk_arguments(risk_status_parser)
+    risk_status_parser.add_argument("--db", default="tradebots_ai.sqlite")
 
     performance_parser = subparsers.add_parser(
         "performance-report",
@@ -317,6 +327,31 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _add_risk_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--max-open-positions", type=int, default=3)
+    parser.add_argument("--max-position-value-pct", type=float, default=25.0)
+    parser.add_argument("--max-total-exposure-pct", type=float, default=75.0)
+    parser.add_argument("--max-daily-realized-loss-pct", type=float, default=5.0)
+    parser.add_argument("--cooldown-minutes-after-loss", type=int, default=60)
+    parser.add_argument(
+        "--paper-account-value",
+        type=float,
+        default=10_000.0,
+        help="Local account value estimate used for paper risk percentages",
+    )
+
+
+def _risk_settings_from_args(args: argparse.Namespace) -> RiskSettings:
+    return RiskSettings(
+        max_open_positions=args.max_open_positions,
+        max_position_value_pct=args.max_position_value_pct,
+        max_total_exposure_pct=args.max_total_exposure_pct,
+        max_daily_realized_loss_pct=args.max_daily_realized_loss_pct,
+        cooldown_minutes_after_loss=args.cooldown_minutes_after_loss,
+        account_value=args.paper_account_value,
+    )
+
+
 def main() -> int:
     args = parse_args()
     if args.command == "capture-once":
@@ -421,8 +456,11 @@ def main() -> int:
             args.confirm_paper,
             args.confidence_threshold,
             args.top_only,
+            _risk_settings_from_args(args),
             args.db,
         )
+    if args.command == "risk-status":
+        return run_risk_status(_risk_settings_from_args(args), args.db)
     if args.command == "run-scheduler":
         return run_scheduler(
             args.symbols,
@@ -434,6 +472,7 @@ def main() -> int:
             args.confirm_paper,
             args.top_only,
             args.market_hours_only,
+            _risk_settings_from_args(args),
             args.db,
         )
     if args.command == "performance-report":
@@ -853,6 +892,7 @@ def run_alpaca_paper_trade(
     confirm_paper: bool,
     confidence_threshold: float,
     top_only: bool,
+    risk_settings: RiskSettings,
     db_path: str,
 ) -> int:
     from broker.alpaca_client import AlpacaPaperClient
@@ -880,6 +920,7 @@ def run_alpaca_paper_trade(
         confidence_threshold=confidence_threshold,
         top_only=top_only,
         execute_orders=True,
+        risk_settings=risk_settings,
         db_path=db_path,
         session_id=f"alpaca-paper-trade-{uuid4().hex}",
     )
@@ -897,6 +938,7 @@ def run_scheduler(
     confirm_paper: bool,
     top_only: bool,
     market_hours_only: bool,
+    risk_settings: RiskSettings,
     db_path: str,
     max_cycles: int | None = None,
 ) -> int:
@@ -945,6 +987,7 @@ def run_scheduler(
                     confidence_threshold=confidence_threshold,
                     top_only=top_only,
                     execute_orders=confirm_paper,
+                    risk_settings=risk_settings,
                     db_path=db_path,
                     session_id=cycle_id,
                 )
@@ -972,6 +1015,34 @@ def run_performance_report(db_path: str, last: int | None, since_days: int | Non
 
     report = _build_performance_report(trades)
     print(report)
+    return 0
+
+
+def run_risk_status(risk_settings: RiskSettings, db_path: str) -> int:
+    with SQLiteStore(db_path) as store:
+        store.initialize()
+        snapshot = _risk_snapshot(store, risk_settings)
+    exposure_value = total_exposure_value(snapshot.open_positions)
+    exposure_pct = (exposure_value / max(risk_settings.account_value, 1.0)) * 100
+    print("Risk Status:")
+    print("Open positions:")
+    if snapshot.open_positions:
+        for position in snapshot.open_positions:
+            value = float(position["qty"]) * float(position["avg_entry_price"])
+            print(
+                f"- {position['symbol']}: qty={position['qty']:g} "
+                f"avg_entry=${position['avg_entry_price']:.2f} value=${value:.2f}"
+            )
+    else:
+        print("- none")
+    print(f"Total exposure: ${exposure_value:.2f} ({exposure_pct:.2f}%)")
+    print(f"Daily realised PnL: ${snapshot.daily_realized_pnl:.2f}")
+    print("Symbols in cooldown:")
+    if snapshot.cooldown_symbols:
+        for symbol in sorted(snapshot.cooldown_symbols):
+            print(f"- {symbol}")
+    else:
+        print("- none")
     return 0
 
 
@@ -1206,6 +1277,7 @@ def _run_alpaca_trade_scan(
     confidence_threshold: float,
     top_only: bool,
     execute_orders: bool,
+    risk_settings: RiskSettings,
     db_path: str,
     session_id: str,
 ) -> list[AlpacaAdviceResult]:
@@ -1257,6 +1329,24 @@ def _run_alpaca_trade_scan(
                 _save_alpaca_trade_action(store, skipped, qty, "skipped", session_id)
                 updated_results.append(skipped)
                 continue
+
+            if result.signal.action == "BUY":
+                risk_decision = evaluate_buy_guardrails(
+                    symbol=result.symbol,
+                    estimated_position_value=qty * result.signal.close,
+                    snapshot=_risk_snapshot(store, risk_settings),
+                    settings=risk_settings,
+                )
+                if not risk_decision.allowed:
+                    skipped = AlpacaAdviceResult(
+                        result.symbol,
+                        result.signal,
+                        result.position,
+                        skipped_reason="; ".join(risk_decision.reasons),
+                    )
+                    _save_alpaca_trade_action(store, skipped, qty, "skipped", session_id)
+                    updated_results.append(skipped)
+                    continue
 
             if not execute_orders:
                 dry_run = AlpacaAdviceResult(
@@ -1335,6 +1425,14 @@ def _signal_engine_for_symbol(
     from strategy.tuner import signal_config_from_tuned_params
 
     return SignalEngine(signal_config_from_tuned_params(params)), "tuned"
+
+
+def _risk_snapshot(store: SQLiteStore, risk_settings: RiskSettings) -> RiskSnapshot:
+    return RiskSnapshot(
+        open_positions=store.get_open_positions(),
+        daily_realized_pnl=store.get_daily_realized_pnl(),
+        cooldown_symbols=store.get_symbols_in_cooldown(risk_settings.cooldown_minutes_after_loss),
+    )
 
 
 def _save_alpaca_trade_action(

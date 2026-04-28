@@ -348,6 +348,22 @@ with `Ctrl+C`. Every advisory signal is saved to SQLite, and submitted, failed,
 dry-run, and skipped paper-trade decisions are recorded in
 `alpaca_trade_actions` with the skip reason.
 
+Portfolio guardrails protect paper trading from overexposure before BUY orders:
+
+```powershell
+python -m app.main run-scheduler --symbols AAPL,MSFT,TSLA --confirm-paper --max-open-positions 3 --max-position-value-pct 25 --max-total-exposure-pct 75 --max-daily-realized-loss-pct 5 --cooldown-minutes-after-loss 60
+```
+
+BUY orders can be skipped for max open positions, oversized position value, too
+much total exposure, daily realised loss limit, or symbol cooldown after a loss.
+SELL signals are still allowed unless Alpaca/API safety checks fail.
+
+Check current local risk state:
+
+```powershell
+python -m app.main risk-status
+```
+
 ## Performance Reporting
 
 Completed trades are tracked from BUY entry to SELL exit. The report ignores

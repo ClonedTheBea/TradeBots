@@ -377,6 +377,61 @@ class SQLiteStore:
         )
         return [_trade_row_to_dict(row) for row in cursor.fetchall()]
 
+    def get_open_positions(self) -> list[dict[str, Any]]:
+        cursor = self._conn().execute(
+            """
+            SELECT symbol, qty, avg_entry_price, last_updated
+            FROM positions
+            WHERE qty > 0
+            ORDER BY symbol
+            """
+        )
+        return [
+            {
+                "symbol": row[0],
+                "qty": row[1],
+                "avg_entry_price": row[2],
+                "last_updated": row[3],
+            }
+            for row in cursor.fetchall()
+        ]
+
+    def get_daily_realized_pnl(self, day: str | None = None) -> float:
+        target_day = day or datetime.now().date().isoformat()
+        row = self._conn().execute(
+            """
+            SELECT COALESCE(SUM(profit_loss), 0)
+            FROM trades
+            WHERE exit_time IS NOT NULL AND substr(exit_time, 1, 10) = ?
+            """,
+            (target_day,),
+        ).fetchone()
+        return float(row[0] or 0)
+
+    def get_symbols_in_cooldown(self, cooldown_minutes: int, now: datetime | None = None) -> set[str]:
+        current = now or datetime.now()
+        rows = self._conn().execute(
+            """
+            SELECT symbol, exit_time, profit_loss
+            FROM trades
+            WHERE exit_time IS NOT NULL AND profit_loss < 0
+            ORDER BY exit_time DESC
+            """
+        ).fetchall()
+        symbols: set[str] = set()
+        for symbol, exit_time, _profit_loss in rows:
+            try:
+                exit_dt = _parse_datetime(exit_time)
+            except ValueError:
+                continue
+            if exit_dt.tzinfo is not None:
+                exit_dt = exit_dt.replace(tzinfo=None)
+            if current.tzinfo is not None:
+                current = current.replace(tzinfo=None)
+            if (current - exit_dt).total_seconds() <= cooldown_minutes * 60:
+                symbols.add(str(symbol).upper())
+        return symbols
+
     def save_strategy_parameters(
         self,
         params: dict[str, Any],
