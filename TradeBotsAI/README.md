@@ -275,9 +275,11 @@ Create `.env` in the `TradeBotsAI` folder:
 ALPACA_API_KEY=your_key
 ALPACA_SECRET_KEY=your_secret
 ALPACA_PAPER=true
+ALPACA_DATA_FEED=iex
 ```
 
 If `ALPACA_PAPER` is not exactly `true`, Alpaca commands refuse to run.
+If `ALPACA_DATA_FEED` is omitted, the assistant uses `iex`.
 
 Fetch market bars and get advice:
 
@@ -300,6 +302,17 @@ Safety rules:
 - BUY only runs when no paper position exists.
 - Orders require `--confirm-paper`.
 - Signals, orders, and positions are logged to SQLite.
+
+### Alpaca IEX vs SIP
+
+`ALPACA_DATA_FEED=iex` is the default and is safest for Alpaca free/basic market
+data access. Alpaca documents IEX as the feed available without a paid
+subscription.
+
+`ALPACA_DATA_FEED=sip` requests the consolidated SIP feed. Alpaca documents that
+recent SIP data requires the proper paid market data subscription. To reduce
+subscription errors for historical bar requests, TradeBotsAI moves SIP request
+end times back by at least 15 minutes and prints a warning when SIP is selected.
 
 ## Project Layout
 

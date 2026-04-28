@@ -20,6 +20,7 @@ class AlpacaConfig:
     api_key: str
     secret_key: str
     paper: bool
+    data_feed: str = "iex"
 
 
 @dataclass(frozen=True)
@@ -44,13 +45,21 @@ def load_alpaca_config(env_path: str | Path = ".env") -> AlpacaConfig:
     api_key = values.get("ALPACA_API_KEY") or os.getenv("ALPACA_API_KEY")
     secret_key = values.get("ALPACA_SECRET_KEY") or os.getenv("ALPACA_SECRET_KEY")
     paper_value = values.get("ALPACA_PAPER") or os.getenv("ALPACA_PAPER")
+    data_feed = (values.get("ALPACA_DATA_FEED") or os.getenv("ALPACA_DATA_FEED") or "iex").strip().lower()
 
     if not api_key or not secret_key:
         raise RuntimeError("Missing ALPACA_API_KEY or ALPACA_SECRET_KEY in .env/environment.")
     if str(paper_value).strip().lower() != "true":
         raise RuntimeError("Refusing Alpaca access: ALPACA_PAPER must be true. Live trading is not supported.")
+    if data_feed not in {"iex", "sip"}:
+        raise RuntimeError("ALPACA_DATA_FEED must be either iex or sip.")
+    if data_feed == "sip":
+        print(
+            "Warning: ALPACA_DATA_FEED=sip selected. Recent SIP market data requires "
+            "a paid Alpaca market data subscription; historical SIP requests are delayed by at least 15 minutes."
+        )
 
-    return AlpacaConfig(api_key=api_key, secret_key=secret_key, paper=True)
+    return AlpacaConfig(api_key=api_key, secret_key=secret_key, paper=True, data_feed=data_feed)
 
 
 class AlpacaPaperClient:
@@ -68,6 +77,7 @@ class AlpacaPaperClient:
             config.api_key,
             config.secret_key,
         )
+        self.data_feed = config.data_feed
 
     @classmethod
     def from_env(cls, env_path: str | Path = ".env") -> "AlpacaPaperClient":
@@ -83,6 +93,8 @@ class AlpacaPaperClient:
             raise ValueError("lookback must be positive")
 
         end = datetime.now(timezone.utc)
+        if self.data_feed == "sip":
+            end = end - timedelta(minutes=16)
         start = end - timedelta(days=max(lookback * 2, lookback + 10))
         request = self._alpaca["StockBarsRequest"](
             symbol_or_symbols=symbol,
@@ -90,6 +102,7 @@ class AlpacaPaperClient:
             start=start,
             end=end,
             limit=lookback,
+            feed=_parse_data_feed(self.data_feed, self._alpaca["DataFeed"]),
         )
         response = self.data_client.get_stock_bars(request)
         bars = _extract_symbol_bars(response, symbol)
@@ -166,6 +179,15 @@ def _parse_timeframe(value: str, time_frame_cls: Any) -> Any:
     return mapping[normalized]
 
 
+def _parse_data_feed(value: str, data_feed_cls: Any) -> Any:
+    normalized = value.strip().lower()
+    if normalized == "iex":
+        return data_feed_cls.IEX
+    if normalized == "sip":
+        return data_feed_cls.SIP
+    raise ValueError(f"Unsupported Alpaca data feed: {value}")
+
+
 def _extract_symbol_bars(response: Any, symbol: str) -> list[Any]:
     if hasattr(response, "data"):
         data = response.data
@@ -200,6 +222,7 @@ def _read_env_file(path: str | Path) -> dict[str, str]:
 def _load_alpaca_modules() -> dict[str, Any]:
     try:
         from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.enums import DataFeed
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame
         from alpaca.trading.client import TradingClient
@@ -213,6 +236,7 @@ def _load_alpaca_modules() -> dict[str, Any]:
 
     return {
         "MarketOrderRequest": MarketOrderRequest,
+        "DataFeed": DataFeed,
         "OrderSide": OrderSide,
         "StockBarsRequest": StockBarsRequest,
         "StockHistoricalDataClient": StockHistoricalDataClient,

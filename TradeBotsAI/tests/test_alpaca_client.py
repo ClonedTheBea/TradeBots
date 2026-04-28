@@ -40,6 +40,30 @@ class AlpacaClientTests(unittest.TestCase):
         self.assertEqual(config.api_key, "key")
         self.assertEqual(config.secret_key, "secret")
         self.assertTrue(config.paper)
+        self.assertEqual(config.data_feed, "iex")
+
+    def test_load_alpaca_config_reads_sip_feed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_path.write_text(
+                "ALPACA_API_KEY=key\nALPACA_SECRET_KEY=secret\nALPACA_PAPER=true\nALPACA_DATA_FEED=sip\n",
+                encoding="utf-8",
+            )
+
+            config = load_alpaca_config(env_path)
+
+        self.assertEqual(config.data_feed, "sip")
+
+    def test_load_alpaca_config_rejects_unknown_feed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_path.write_text(
+                "ALPACA_API_KEY=key\nALPACA_SECRET_KEY=secret\nALPACA_PAPER=true\nALPACA_DATA_FEED=boats\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "ALPACA_DATA_FEED"):
+                load_alpaca_config(env_path)
 
     def test_alpaca_bar_to_candle(self):
         candle = alpaca_bar_to_candle(FakeBar())
