@@ -4,6 +4,7 @@ from pathlib import Path
 
 from app.automation import (
     append_price_if_new,
+    detect_process_trade_action,
     execute_trade,
     last_recorded_timestamp,
     load_step_config,
@@ -74,13 +75,31 @@ class AutomationTests(unittest.TestCase):
             dry_run=False,
             pyautogui_module=FakePyAutoGui(),
             config=fake_config(),
+            process_trade_image=FakeImage((0, 220, 0)),
         )
 
         self.assertTrue(result.executed)
-        self.assertTrue(result.clicked_buy)
+        self.assertFalse(result.clicked_buy)
         self.assertFalse(result.clicked_sell)
         self.assertTrue(result.moved_slider)
         self.assertTrue(result.clicked_process_trade)
+        self.assertEqual(result.detected_action, "BUY")
+
+    def test_slider_drag_uses_handle_start_and_right_destination(self):
+        mouse = FakePyAutoGui()
+
+        execute_trade(
+            "BUY",
+            screen_state(holdings=0.0),
+            dry_run=False,
+            pyautogui_module=mouse,
+            config=fake_config(),
+            process_trade_image=FakeImage((0, 220, 0)),
+        )
+
+        self.assertIn(("moveTo", 5, 6), mouse.calls)
+        self.assertIn(("dragTo", 7, 8, 0, "left"), mouse.calls)
+        self.assertIn(("click", 7, 8), mouse.calls)
 
     def test_buy_with_holdings_skips(self):
         result = execute_trade("BUY", screen_state(holdings=10.0), dry_run=False)
@@ -95,13 +114,43 @@ class AutomationTests(unittest.TestCase):
             dry_run=False,
             pyautogui_module=FakePyAutoGui(),
             config=fake_config(),
+            process_trade_image=FakeImage((220, 0, 0)),
         )
 
         self.assertTrue(result.executed)
         self.assertFalse(result.clicked_buy)
-        self.assertTrue(result.clicked_sell)
+        self.assertFalse(result.clicked_sell)
         self.assertTrue(result.moved_slider)
         self.assertTrue(result.clicked_process_trade)
+        self.assertEqual(result.detected_action, "SELL")
+
+    def test_sell_toggles_when_process_button_is_green(self):
+        result = execute_trade(
+            "SELL",
+            screen_state(holdings=10.0),
+            dry_run=False,
+            pyautogui_module=FakePyAutoGui(),
+            config=fake_config(),
+            process_trade_image=FakeImage((0, 220, 0)),
+        )
+
+        self.assertTrue(result.executed)
+        self.assertTrue(result.clicked_sell)
+        self.assertEqual(result.detected_action, "BUY")
+
+    def test_buy_toggles_when_process_button_is_red(self):
+        result = execute_trade(
+            "BUY",
+            screen_state(holdings=0.0),
+            dry_run=False,
+            pyautogui_module=FakePyAutoGui(),
+            config=fake_config(),
+            process_trade_image=FakeImage((220, 0, 0)),
+        )
+
+        self.assertTrue(result.executed)
+        self.assertTrue(result.clicked_buy)
+        self.assertEqual(result.detected_action, "SELL")
 
     def test_sell_with_no_holdings_skips(self):
         result = execute_trade("SELL", screen_state(holdings=0.0), dry_run=False)
@@ -115,6 +164,11 @@ class AutomationTests(unittest.TestCase):
         self.assertFalse(result.executed)
         self.assertEqual(result.skipped_reason, "HOLD signal: no trade.")
 
+    def test_detect_process_trade_action_from_button_colour(self):
+        self.assertEqual(detect_process_trade_action(FakeImage((0, 220, 0)), fake_config()), "BUY")
+        self.assertEqual(detect_process_trade_action(FakeImage((220, 0, 0)), fake_config()), "SELL")
+        self.assertIsNone(detect_process_trade_action(FakeImage((80, 80, 80)), fake_config()))
+
 
 class FakePyAutoGui:
     def __init__(self):
@@ -126,8 +180,24 @@ class FakePyAutoGui:
     def moveTo(self, x, y):
         self.calls.append(("moveTo", x, y))
 
-    def dragTo(self, x, y, duration=0):
-        self.calls.append(("dragTo", x, y, duration))
+    def dragTo(self, x, y, duration=0, button="left"):
+        self.calls.append(("dragTo", x, y, duration, button))
+
+
+class FakeImage:
+    def __init__(self, colour, width=80, height=80):
+        self.colour = colour
+        self.width = width
+        self.height = height
+
+    def crop(self, box):
+        return self
+
+    def convert(self, mode):
+        return self
+
+    def getdata(self):
+        return [self.colour] * (self.width * self.height)
 
 
 def screen_state(holdings):
@@ -148,11 +218,14 @@ def fake_config():
         "buy_button_y": 2,
         "sell_button_x": 3,
         "sell_button_y": 4,
-        "slider_right_x": 5,
-        "slider_right_y": 6,
-        "process_trade_x": 7,
-        "process_trade_y": 8,
+        "slider_handle_x": 5,
+        "slider_handle_y": 6,
+        "slider_right_x": 7,
+        "slider_right_y": 8,
+        "process_trade_x": 9,
+        "process_trade_y": 10,
         "slider_drag_duration_seconds": 0,
+        "process_trade_color_sample_radius": 10,
     }
 
 

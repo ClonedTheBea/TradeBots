@@ -196,6 +196,7 @@ run the matching command:
 python -m app.main set-buy-button
 python -m app.main set-sell-button
 python -m app.main set-process-trade-button
+python -m app.main set-slider-handle
 python -m app.main set-slider-right
 python -m app.main set-step-button
 ```
@@ -220,6 +221,11 @@ Safety rules:
 - BUY is skipped if holdings are already greater than zero.
 - SELL is skipped if holdings are zero.
 - HOLD never clicks trade controls.
+- The bot samples the PROCESS TRADE button color before toggling action:
+  green is treated as BUY-ready, red is treated as SELL-ready.
+- If the PROCESS TRADE color cannot be detected, the trade is skipped.
+- Before processing a BUY or SELL, the bot drags from the calibrated slider
+  handle/start point to the calibrated slider far-right point.
 - The bot never shorts.
 - Stop with `ESC` or `Ctrl+C`.
 

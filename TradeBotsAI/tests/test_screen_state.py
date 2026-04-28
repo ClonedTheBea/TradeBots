@@ -56,6 +56,21 @@ class ScreenStateParserTests(unittest.TestCase):
         self.assertEqual(state.price, 34.44)
         self.assertEqual(state.gain_percent, -0.7)
         self.assertEqual(state.cash, 495.09)
+        self.assertEqual(state.holdings, 0.0)
+
+    def test_parse_screen_state_treats_noisy_holdings_as_zero(self):
+        state = parse_screen_state(
+            "May9Yr1 Price: $34.44 Cash: $495.09 (108%) Holdings: © 9 @ A sere"
+        )
+
+        self.assertEqual(state.holdings, 0.0)
+
+    def test_parse_screen_state_reads_explicit_holdings_value(self):
+        state = parse_screen_state(
+            "Mar 11 Yr 1 Price: $28.99 Cash: $100.00 Holdings: $339.71"
+        )
+
+        self.assertEqual(state.holdings, 339.71)
 
     def test_parse_screen_state_does_not_treat_cash_as_price(self):
         state = parse_screen_state("May9Yr1 Price: =~ Cash: $495.09 Holdings: $0.00")

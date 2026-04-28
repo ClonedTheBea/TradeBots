@@ -58,7 +58,7 @@ def parse_screen_state(ocr_text: str) -> ScreenState:
         price=price,
         gain_percent=_parse_price_gain_percent(ocr_text),
         cash=_parse_labeled_money(ocr_text, ("cash", "balance", "money")),
-        holdings=_parse_labeled_money(ocr_text, ("holdings", "holding", "position")),
+        holdings=_parse_holdings(ocr_text),
         captured_at=datetime.now().isoformat(timespec="seconds"),
         selected_trade_action=_parse_selected_trade_action(ocr_text),
         slider_state=_parse_slider_state(ocr_text),
@@ -72,6 +72,38 @@ def _parse_labeled_money(text: str, labels: tuple[str, ...]) -> float | None:
         if match:
             return parse_money(match.group(1))
     return None
+
+
+def _parse_holdings(text: str) -> float | None:
+    segment = _parse_label_segment(text, "holdings") or _parse_label_segment(text, "holding")
+    if segment is None:
+        return None
+
+    money = parse_money(segment)
+    if money is not None:
+        return money
+
+    decimal_match = re.search(r"\b(-?\d[\d,]*\.\d+)\b", segment)
+    if decimal_match:
+        return float(decimal_match.group(1).replace(",", ""))
+
+    zero_match = re.search(r"\b[0Oo]\b", segment)
+    if zero_match:
+        return 0.0
+
+    # Integer-only OCR after "Holdings" is often UI noise, e.g. "© 9 @ A".
+    return 0.0
+
+
+def _parse_label_segment(text: str, label: str) -> str | None:
+    match = re.search(
+        rf"\b{re.escape(label)}\b\s*[:#-]?\s*(.*?)(?=\b(?:price|cash|balance|money|date|day|selected|slider)\b|$)",
+        text,
+        re.I | re.S,
+    )
+    if not match:
+        return None
+    return match.group(1).strip()
 
 
 def _parse_price_gain_percent(text: str) -> float | None:

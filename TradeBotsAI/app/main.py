@@ -137,6 +137,7 @@ def parse_args() -> argparse.Namespace:
         ("set-buy-button", "Save the current mouse position as the BUY button"),
         ("set-sell-button", "Save the current mouse position as the SELL button"),
         ("set-process-trade-button", "Save the current mouse position as PROCESS TRADE"),
+        ("set-slider-handle", "Save the current mouse position as the slider handle/start point"),
         ("set-slider-right", "Save the current mouse position as the slider far-right point"),
         ("set-step-button", "Save the current mouse position as the STEP button"),
     ):
@@ -149,6 +150,7 @@ def parse_args() -> argparse.Namespace:
         ("test-buy-click", "Click the saved BUY coordinate once"),
         ("test-sell-click", "Click the saved SELL coordinate once"),
         ("test-process-click", "Click the saved PROCESS TRADE coordinate once"),
+        ("test-slider-handle-click", "Click the saved SLIDER HANDLE coordinate once"),
         ("test-slider-click", "Click the saved SLIDER RIGHT coordinate once"),
         ("test-step-click", "Click the saved STEP coordinate once"),
     ):
@@ -252,6 +254,7 @@ def main() -> int:
         "set-buy-button": "buy_button",
         "set-sell-button": "sell_button",
         "set-process-trade-button": "process_trade",
+        "set-slider-handle": "slider_handle",
         "set-slider-right": "slider_right",
         "set-step-button": "step_button",
     }
@@ -271,6 +274,7 @@ def main() -> int:
         "test-buy-click": "buy_button",
         "test-sell-click": "sell_button",
         "test-process-click": "process_trade",
+        "test-slider-handle-click": "slider_handle",
         "test-slider-click": "slider_right",
         "test-step-click": "step_button",
     }

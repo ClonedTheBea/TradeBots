@@ -19,10 +19,13 @@ from game_interface.config import (
     BUY_BUTTON_Y,
     PROCESS_TRADE_X,
     PROCESS_TRADE_Y,
+    PROCESS_TRADE_COLOR_SAMPLE_RADIUS,
     RUNTIME_CONFIG_PATH,
     SELL_BUTTON_X,
     SELL_BUTTON_Y,
     SLIDER_DRAG_DURATION_SECONDS,
+    SLIDER_HANDLE_X,
+    SLIDER_HANDLE_Y,
     SLIDER_RIGHT_X,
     SLIDER_RIGHT_Y,
     STEP_BUTTON_X,
@@ -48,6 +51,7 @@ class TradeExecutionResult:
     clicked_sell: bool
     moved_slider: bool
     clicked_process_trade: bool
+    detected_action: str | None = None
 
 
 def run_auto_step(
@@ -284,10 +288,12 @@ def execute_trade(
     pyautogui_module: Any | None = None,
     config: dict[str, float | int | bool] | None = None,
     debug: bool = False,
+    process_trade_image: Any | None = None,
 ) -> TradeExecutionResult:
     normalized_action = action.upper()
     holdings = screen_state.holdings or 0.0
     automation_config = config or load_step_config()
+    print(f"Trade decision: action={normalized_action}, parsed_holdings={holdings:g}")
 
     if normalized_action == "HOLD":
         return _skipped_trade(normalized_action, "HOLD signal: no trade.")
@@ -313,28 +319,46 @@ def execute_trade(
     clicked_buy = False
     clicked_sell = False
 
-    if debug:
-        capture_screen(debug=True)
+    before_image = process_trade_image or capture_screen(debug=debug)
+    detected_action = detect_process_trade_action(before_image, automation_config)
+    print(f"Detected PROCESS TRADE action: {detected_action or 'unknown'}")
 
-    if normalized_action == "BUY":
+    if detected_action is None:
+        return TradeExecutionResult(
+            requested_action=normalized_action,
+            executed=False,
+            skipped_reason="Trade skipped: could not detect PROCESS TRADE button color.",
+            clicked_buy=False,
+            clicked_sell=False,
+            moved_slider=False,
+            clicked_process_trade=False,
+            detected_action=None,
+        )
+
+    if detected_action != normalized_action and normalized_action == "BUY":
         pyautogui.click(automation_config["buy_button_x"], automation_config["buy_button_y"])
         clicked_buy = True
-        print(f"Clicked BUY at x={automation_config['buy_button_x']}, y={automation_config['buy_button_y']}")
-    else:
+        print(
+            "Clicked BUY/action toggle at "
+            f"x={automation_config['buy_button_x']}, y={automation_config['buy_button_y']}"
+        )
+        time.sleep(ACTION_CLICK_DELAY_SECONDS)
+    elif detected_action != normalized_action and normalized_action == "SELL":
         pyautogui.click(automation_config["sell_button_x"], automation_config["sell_button_y"])
         clicked_sell = True
-        print(f"Clicked SELL at x={automation_config['sell_button_x']}, y={automation_config['sell_button_y']}")
+        print(
+            "Clicked SELL/action toggle at "
+            f"x={automation_config['sell_button_x']}, y={automation_config['sell_button_y']}"
+        )
+        time.sleep(ACTION_CLICK_DELAY_SECONDS)
+    else:
+        print(f"PROCESS TRADE already appears set for {normalized_action}; not toggling action.")
 
-    time.sleep(ACTION_CLICK_DELAY_SECONDS)
-    pyautogui.moveTo(automation_config["slider_right_x"], automation_config["slider_right_y"])
-    pyautogui.dragTo(
-        automation_config["slider_right_x"],
-        automation_config["slider_right_y"],
-        duration=automation_config["slider_drag_duration_seconds"],
-    )
-    pyautogui.click(automation_config["slider_right_x"], automation_config["slider_right_y"])
+    drag_slider_to_right(pyautogui, automation_config)
     print(
-        "Moved slider to right at "
+        "Dragged slider from "
+        f"x={automation_config['slider_handle_x']}, y={automation_config['slider_handle_y']} "
+        "to "
         f"x={automation_config['slider_right_x']}, y={automation_config['slider_right_y']}"
     )
     pyautogui.click(automation_config["process_trade_x"], automation_config["process_trade_y"])
@@ -354,7 +378,19 @@ def execute_trade(
         clicked_sell=clicked_sell,
         moved_slider=True,
         clicked_process_trade=True,
+        detected_action=detected_action,
     )
+
+
+def drag_slider_to_right(pyautogui: Any, automation_config: dict[str, float | int | bool]) -> None:
+    pyautogui.moveTo(automation_config["slider_handle_x"], automation_config["slider_handle_y"])
+    pyautogui.dragTo(
+        automation_config["slider_right_x"],
+        automation_config["slider_right_y"],
+        duration=automation_config["slider_drag_duration_seconds"],
+        button="left",
+    )
+    pyautogui.click(automation_config["slider_right_x"], automation_config["slider_right_y"])
 
 
 def _skipped_trade(action: str, reason: str) -> TradeExecutionResult:
@@ -366,7 +402,39 @@ def _skipped_trade(action: str, reason: str) -> TradeExecutionResult:
         clicked_sell=False,
         moved_slider=False,
         clicked_process_trade=False,
+        detected_action=None,
     )
+
+
+def detect_process_trade_action(
+    image: Any,
+    config: dict[str, float | int | bool] | None = None,
+) -> str | None:
+    automation_config = config or load_step_config()
+    center_x = int(automation_config["process_trade_x"])
+    center_y = int(automation_config["process_trade_y"])
+    radius = int(automation_config["process_trade_color_sample_radius"])
+
+    left = max(0, center_x - radius)
+    top = max(0, center_y - radius)
+    right = min(image.width, center_x + radius)
+    bottom = min(image.height, center_y + radius)
+    crop = image.crop((left, top, right, bottom)).convert("RGB")
+
+    red_score = 0
+    green_score = 0
+    for red, green, blue in crop.getdata():
+        if green > 120 and green > red * 1.25 and green > blue * 1.25:
+            green_score += 1
+        elif red > 120 and red > green * 1.25 and red > blue * 1.25:
+            red_score += 1
+
+    minimum_pixels = max(10, int((crop.width * crop.height) * 0.02))
+    if green_score >= minimum_pixels and green_score > red_score * 1.2:
+        return "BUY"
+    if red_score >= minimum_pixels and red_score > green_score * 1.2:
+        return "SELL"
+    return None
 
 
 def log_trade_execution(result: TradeExecutionResult) -> None:
@@ -471,6 +539,7 @@ def print_calibration(config: dict[str, float | int | bool] | None = None) -> No
         f"x={automation_config['process_trade_x']}, y={automation_config['process_trade_y']}"
     )
     print(f"  SLIDER RIGHT: x={automation_config['slider_right_x']}, y={automation_config['slider_right_y']}")
+    print(f"  SLIDER HANDLE: x={automation_config['slider_handle_x']}, y={automation_config['slider_handle_y']}")
     print(f"  STEP: x={automation_config['step_button_x']}, y={automation_config['step_button_y']}")
     print(f"  AUTO_TRADE_ENABLED: {automation_config['auto_trade_enabled']}")
 
@@ -488,6 +557,7 @@ def click_calibrated_target(name: str) -> int:
         "sell_button": ("sell_button_x", "sell_button_y", "SELL"),
         "process_trade": ("process_trade_x", "process_trade_y", "PROCESS TRADE"),
         "slider_right": ("slider_right_x", "slider_right_y", "SLIDER RIGHT"),
+        "slider_handle": ("slider_handle_x", "slider_handle_y", "SLIDER HANDLE"),
         "step_button": ("step_button_x", "step_button_y", "STEP"),
     }
     x_key, y_key, label = key_map[name]
@@ -509,10 +579,13 @@ def load_step_config(config_path: str | Path = RUNTIME_CONFIG_PATH) -> dict[str,
         "sell_button_y": SELL_BUTTON_Y,
         "process_trade_x": PROCESS_TRADE_X,
         "process_trade_y": PROCESS_TRADE_Y,
+        "slider_handle_x": SLIDER_HANDLE_X,
+        "slider_handle_y": SLIDER_HANDLE_Y,
         "slider_right_x": SLIDER_RIGHT_X,
         "slider_right_y": SLIDER_RIGHT_Y,
         "step_delay_seconds": STEP_DELAY_SECONDS,
         "slider_drag_duration_seconds": SLIDER_DRAG_DURATION_SECONDS,
+        "process_trade_color_sample_radius": PROCESS_TRADE_COLOR_SAMPLE_RADIUS,
     }
     path = Path(config_path)
     if not path.exists():
@@ -529,10 +602,13 @@ def load_step_config(config_path: str | Path = RUNTIME_CONFIG_PATH) -> dict[str,
         "sell_button_y",
         "process_trade_x",
         "process_trade_y",
+        "slider_handle_x",
+        "slider_handle_y",
         "slider_right_x",
         "slider_right_y",
         "step_delay_seconds",
         "slider_drag_duration_seconds",
+        "process_trade_color_sample_radius",
     ):
         if key in payload:
             config[key] = payload[key]
