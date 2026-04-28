@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 import json
 from types import TracebackType
@@ -61,14 +62,26 @@ class SQLiteStore:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
                 entry_time TEXT NOT NULL,
-                exit_time TEXT NOT NULL,
                 entry_price REAL NOT NULL,
-                exit_price REAL NOT NULL,
-                quantity REAL NOT NULL,
-                profit_loss REAL NOT NULL,
-                profit_loss_pct REAL NOT NULL,
-                reason TEXT NOT NULL,
+                exit_time TEXT,
+                exit_price REAL,
+                qty REAL NOT NULL,
+                side TEXT NOT NULL DEFAULT 'LONG',
+                entry_confidence REAL,
+                exit_confidence REAL,
+                entry_reason_json TEXT NOT NULL DEFAULT '[]',
+                exit_reason_json TEXT NOT NULL DEFAULT '[]',
+                profit_loss REAL,
+                profit_loss_pct REAL,
+                duration_minutes REAL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS positions (
+                symbol TEXT PRIMARY KEY,
+                qty REAL NOT NULL,
+                avg_entry_price REAL NOT NULL,
+                last_updated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
             CREATE TABLE IF NOT EXISTS backtest_results (
@@ -139,6 +152,7 @@ class SQLiteStore:
         self._ensure_column("signals", "close_price", "REAL NOT NULL DEFAULT 0")
         self._ensure_column("signals", "reasons_json", "TEXT NOT NULL DEFAULT '[]'")
         self._ensure_column("signals", "reasons", "TEXT NOT NULL DEFAULT '[]'")
+        self._migrate_trades_table_if_needed()
         self._ensure_column("backtest_results", "signal_count", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column(
             "backtest_results",
@@ -177,6 +191,149 @@ class SQLiteStore:
             ),
         )
         self._conn().commit()
+
+    def record_trade_entry(
+        self,
+        symbol: str,
+        entry_time: str,
+        entry_price: float,
+        qty: float,
+        entry_confidence: float,
+        entry_reasons: Iterable[str],
+    ) -> int:
+        cursor = self._conn().execute(
+            """
+            INSERT INTO trades (
+                symbol, entry_time, entry_price, qty, side,
+                entry_confidence, entry_reason_json
+            )
+            VALUES (?, ?, ?, ?, 'LONG', ?, ?)
+            """,
+            (
+                symbol.upper(),
+                entry_time,
+                entry_price,
+                qty,
+                entry_confidence,
+                json.dumps(list(entry_reasons)),
+            ),
+        )
+        self._upsert_position(symbol, qty, entry_price, entry_time)
+        self._conn().commit()
+        return int(cursor.lastrowid)
+
+    def record_trade_exit(
+        self,
+        symbol: str,
+        exit_time: str,
+        exit_price: float,
+        exit_confidence: float,
+        exit_reasons: Iterable[str],
+    ) -> dict[str, Any] | None:
+        open_trade = self.get_open_trade(symbol)
+        if open_trade is None:
+            return None
+
+        qty = float(open_trade["qty"])
+        entry_price = float(open_trade["entry_price"])
+        profit_loss = (exit_price - entry_price) * qty
+        profit_loss_pct = ((exit_price - entry_price) / entry_price) * 100 if entry_price else 0.0
+        duration_minutes = _duration_minutes(open_trade["entry_time"], exit_time)
+        self._conn().execute(
+            """
+            UPDATE trades
+            SET
+                exit_time = ?,
+                exit_price = ?,
+                exit_confidence = ?,
+                exit_reason_json = ?,
+                profit_loss = ?,
+                profit_loss_pct = ?,
+                duration_minutes = ?
+            WHERE id = ?
+            """,
+            (
+                exit_time,
+                exit_price,
+                exit_confidence,
+                json.dumps(list(exit_reasons)),
+                round(profit_loss, 2),
+                round(profit_loss_pct, 4),
+                duration_minutes,
+                open_trade["id"],
+            ),
+        )
+        self._conn().execute("DELETE FROM positions WHERE symbol = ?", (symbol.upper(),))
+        self._conn().commit()
+        return self.get_trade_by_id(int(open_trade["id"]))
+
+    def get_open_trade(self, symbol: str) -> dict[str, Any] | None:
+        cursor = self._conn().execute(
+            """
+            SELECT
+                id, symbol, entry_time, entry_price, exit_time, exit_price,
+                qty, side, entry_confidence, exit_confidence,
+                entry_reason_json, exit_reason_json, profit_loss,
+                profit_loss_pct, duration_minutes, created_at
+            FROM trades
+            WHERE symbol = ? AND exit_time IS NULL
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (symbol.upper(),),
+        )
+        row = cursor.fetchone()
+        return _trade_row_to_dict(row) if row else None
+
+    def get_trade_by_id(self, trade_id: int) -> dict[str, Any] | None:
+        cursor = self._conn().execute(
+            """
+            SELECT
+                id, symbol, entry_time, entry_price, exit_time, exit_price,
+                qty, side, entry_confidence, exit_confidence,
+                entry_reason_json, exit_reason_json, profit_loss,
+                profit_loss_pct, duration_minutes, created_at
+            FROM trades
+            WHERE id = ?
+            """,
+            (trade_id,),
+        )
+        row = cursor.fetchone()
+        return _trade_row_to_dict(row) if row else None
+
+    def get_completed_trades(
+        self,
+        limit: int | None = None,
+        since_days: int | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses = ["exit_time IS NOT NULL"]
+        params: list[Any] = []
+        if since_days is not None:
+            if since_days <= 0:
+                raise ValueError("since_days must be positive")
+            clauses.append("datetime(exit_time) >= datetime('now', ?)")
+            params.append(f"-{since_days} days")
+        limit_sql = ""
+        if limit is not None:
+            if limit <= 0:
+                raise ValueError("limit must be positive")
+            limit_sql = "LIMIT ?"
+            params.append(limit)
+        cursor = self._conn().execute(
+            f"""
+            SELECT
+                id, symbol, entry_time, entry_price, exit_time, exit_price,
+                qty, side, entry_confidence, exit_confidence,
+                entry_reason_json, exit_reason_json, profit_loss,
+                profit_loss_pct, duration_minutes, created_at
+            FROM trades
+            WHERE {' AND '.join(clauses)}
+            ORDER BY exit_time DESC, id DESC
+            {limit_sql}
+            """,
+            params,
+        )
+        return [_trade_row_to_dict(row) for row in cursor.fetchall()]
 
     def save_market_candles(
         self,
@@ -369,21 +526,24 @@ class SQLiteStore:
         self._conn().execute(
             """
             INSERT INTO trades (
-                symbol, entry_time, exit_time, entry_price, exit_price,
-                quantity, profit_loss, profit_loss_pct, reason
+                symbol, entry_time, entry_price, exit_time, exit_price,
+                qty, side, entry_reason_json, exit_reason_json,
+                profit_loss, profit_loss_pct, duration_minutes
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 'LONG', ?, ?, ?, ?, ?)
             """,
             (
                 trade.symbol,
                 trade.entry_time,
-                trade.exit_time,
                 trade.entry_price,
+                trade.exit_time,
                 trade.exit_price,
                 trade.quantity,
+                json.dumps([trade.reason]),
+                json.dumps([trade.reason]),
                 trade.profit_loss,
                 trade.profit_loss_pct,
-                trade.reason,
+                _duration_minutes(trade.entry_time, trade.exit_time),
             ),
         )
         self._conn().commit()
@@ -423,6 +583,115 @@ class SQLiteStore:
         if column_name not in columns:
             self._conn().execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
+    def _migrate_trades_table_if_needed(self) -> None:
+        columns = {
+            row[1]: row for row in self._conn().execute("PRAGMA table_info(trades)").fetchall()
+        }
+        if "qty" in columns and "entry_confidence" in columns:
+            return
+
+        self._conn().execute("ALTER TABLE trades RENAME TO trades_legacy")
+        self._conn().execute(
+            """
+            CREATE TABLE trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                entry_time TEXT NOT NULL,
+                entry_price REAL NOT NULL,
+                exit_time TEXT,
+                exit_price REAL,
+                qty REAL NOT NULL,
+                side TEXT NOT NULL DEFAULT 'LONG',
+                entry_confidence REAL,
+                exit_confidence REAL,
+                entry_reason_json TEXT NOT NULL DEFAULT '[]',
+                exit_reason_json TEXT NOT NULL DEFAULT '[]',
+                profit_loss REAL,
+                profit_loss_pct REAL,
+                duration_minutes REAL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        legacy_columns = set(columns)
+        if legacy_columns:
+            quantity_expression = "quantity" if "quantity" in legacy_columns else "qty"
+            self._conn().execute(
+                f"""
+                INSERT INTO trades (
+                    id, symbol, entry_time, entry_price, exit_time, exit_price,
+                    qty, side, entry_reason_json, exit_reason_json,
+                    profit_loss, profit_loss_pct, duration_minutes, created_at
+                )
+                SELECT
+                    id, symbol, entry_time, entry_price, exit_time, exit_price,
+                    {quantity_expression}, 'LONG', '[]', '[]',
+                    profit_loss, profit_loss_pct, NULL, created_at
+                FROM trades_legacy
+                """
+            )
+        self._conn().execute("DROP TABLE trades_legacy")
+        self._conn().commit()
+
+    def _upsert_position(
+        self,
+        symbol: str,
+        qty: float,
+        avg_entry_price: float,
+        last_updated: str,
+    ) -> None:
+        self._conn().execute(
+            """
+            INSERT INTO positions (symbol, qty, avg_entry_price, last_updated)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                qty = excluded.qty,
+                avg_entry_price = excluded.avg_entry_price,
+                last_updated = excluded.last_updated
+            """,
+            (symbol.upper(), qty, avg_entry_price, last_updated),
+        )
+
 
 def _reasons_json(signal: Signal) -> str:
     return json.dumps(list(signal.reasons))
+
+
+def _trade_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "id": row[0],
+        "symbol": row[1],
+        "entry_time": row[2],
+        "entry_price": row[3],
+        "exit_time": row[4],
+        "exit_price": row[5],
+        "qty": row[6],
+        "side": row[7],
+        "entry_confidence": row[8],
+        "exit_confidence": row[9],
+        "entry_reason_json": row[10],
+        "exit_reason_json": row[11],
+        "entry_reasons": json.loads(row[10] or "[]"),
+        "exit_reasons": json.loads(row[11] or "[]"),
+        "profit_loss": row[12],
+        "profit_loss_pct": row[13],
+        "duration_minutes": row[14],
+        "created_at": row[15],
+    }
+
+
+def _duration_minutes(entry_time: str, exit_time: str) -> float | None:
+    try:
+        entry = _parse_datetime(entry_time)
+        exit_ = _parse_datetime(exit_time)
+    except ValueError:
+        return None
+    return round((exit_ - entry).total_seconds() / 60, 4)
+
+
+def _parse_datetime(value: str) -> Any:
+    normalized = value.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return datetime.strptime(value, "%Y-%m-%d")

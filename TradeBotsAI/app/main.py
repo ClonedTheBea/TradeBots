@@ -209,6 +209,14 @@ def parse_args() -> argparse.Namespace:
     scheduler_parser.add_argument("--market-hours-only", action="store_true")
     scheduler_parser.add_argument("--db", default="tradebots_ai.sqlite")
 
+    performance_parser = subparsers.add_parser(
+        "performance-report",
+        help="Report completed paper/backtest trade performance",
+    )
+    performance_parser.add_argument("--last", type=int, help="Show only the last N completed trades")
+    performance_parser.add_argument("--since", type=int, help="Filter completed trades from the last DAYS days")
+    performance_parser.add_argument("--db", default="tradebots_ai.sqlite")
+
     for command_name, help_text in (
         ("marketstack-fetch", "Fetch MarketStack OHLCV candles and save them locally"),
         ("marketstack-advice", "Fetch MarketStack candles and run advisory analysis"),
@@ -385,6 +393,8 @@ def main() -> int:
             args.market_hours_only,
             args.db,
         )
+    if args.command == "performance-report":
+        return run_performance_report(args.db, args.last, args.since)
     if args.command == "marketstack-fetch":
         return run_marketstack_fetch(
             args.symbol,
@@ -876,6 +886,61 @@ def run_scheduler(
     return 0
 
 
+def run_performance_report(db_path: str, last: int | None, since_days: int | None) -> int:
+    try:
+        with SQLiteStore(db_path) as store:
+            store.initialize()
+            trades = store.get_completed_trades(limit=last, since_days=since_days)
+    except ValueError as exc:
+        print(exc)
+        return 1
+
+    report = _build_performance_report(trades)
+    print(report)
+    return 0
+
+
+def _build_performance_report(trades: list[dict]) -> str:
+    if not trades:
+        return "Summary:\n- Total trades: 0\n- Win rate: 0.00%\n- Total PnL: $0.00\n- Avg PnL per trade: $0.00\n- Best trade: n/a\n- Worst trade: n/a\n- Avg duration: 0.00 minutes\n\nPer-symbol breakdown:\nNo completed trades."
+
+    total_trades = len(trades)
+    wins = sum(1 for trade in trades if (trade["profit_loss"] or 0) > 0)
+    total_pnl = sum(float(trade["profit_loss"] or 0) for trade in trades)
+    avg_pnl = total_pnl / total_trades
+    best_trade = max(trades, key=lambda trade: trade["profit_loss"] or 0)
+    worst_trade = min(trades, key=lambda trade: trade["profit_loss"] or 0)
+    durations = [float(trade["duration_minutes"]) for trade in trades if trade["duration_minutes"] is not None]
+    avg_duration = sum(durations) / len(durations) if durations else 0.0
+
+    lines = [
+        "Summary:",
+        f"- Total trades: {total_trades}",
+        f"- Win rate: {(wins / total_trades) * 100:.2f}%",
+        f"- Total PnL: ${total_pnl:.2f}",
+        f"- Avg PnL per trade: ${avg_pnl:.2f}",
+        f"- Best trade: {best_trade['symbol']} ${best_trade['profit_loss']:.2f} ({best_trade['profit_loss_pct']:.2f}%)",
+        f"- Worst trade: {worst_trade['symbol']} ${worst_trade['profit_loss']:.2f} ({worst_trade['profit_loss_pct']:.2f}%)",
+        f"- Avg duration: {avg_duration:.2f} minutes",
+        "",
+        "Per-symbol breakdown:",
+    ]
+
+    for symbol in sorted({trade["symbol"] for trade in trades}):
+        symbol_trades = [trade for trade in trades if trade["symbol"] == symbol]
+        symbol_wins = sum(1 for trade in symbol_trades if (trade["profit_loss"] or 0) > 0)
+        symbol_pnl = sum(float(trade["profit_loss"] or 0) for trade in symbol_trades)
+        lines.extend(
+            [
+                f"{symbol}:",
+                f"- trades: {len(symbol_trades)}",
+                f"- win rate: {(symbol_wins / len(symbol_trades)) * 100:.2f}%",
+                f"- total PnL: ${symbol_pnl:.2f}",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def _run_alpaca_trade_scan(
     client,
     symbols: list[str],
@@ -968,6 +1033,25 @@ def _run_alpaca_trade_scan(
                     new_position,
                     submitted_order=order,
                 )
+                if result.signal.action == "BUY":
+                    store.record_trade_entry(
+                        symbol=result.symbol,
+                        entry_time=result.signal.timestamp,
+                        entry_price=result.signal.close,
+                        qty=float(getattr(order, "qty", qty) or qty),
+                        entry_confidence=result.signal.confidence,
+                        entry_reasons=result.signal.reasons,
+                    )
+                elif result.signal.action == "SELL":
+                    closed_trade = store.record_trade_exit(
+                        symbol=result.symbol,
+                        exit_time=result.signal.timestamp,
+                        exit_price=result.signal.close,
+                        exit_confidence=result.signal.confidence,
+                        exit_reasons=result.signal.reasons,
+                    )
+                    if closed_trade is None:
+                        print(f"{result.symbol} SELL submitted, but no open tracked trade was found to close.")
                 _save_alpaca_trade_action(store, submitted, qty, "submitted", session_id)
                 updated_results.append(submitted)
             except Exception as exc:

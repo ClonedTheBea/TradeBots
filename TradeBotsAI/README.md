@@ -348,6 +348,25 @@ with `Ctrl+C`. Every advisory signal is saved to SQLite, and submitted, failed,
 dry-run, and skipped paper-trade decisions are recorded in
 `alpaca_trade_actions` with the skip reason.
 
+## Performance Reporting
+
+Completed trades are tracked from BUY entry to SELL exit. The report ignores
+open trades and HOLD signals:
+
+```powershell
+python -m app.main performance-report
+```
+
+Limit the report to recent completed trades:
+
+```powershell
+python -m app.main performance-report --last 20
+python -m app.main performance-report --since 30
+```
+
+The report prints total trades, win rate, total and average PnL, best/worst
+trade, average duration, and a per-symbol breakdown.
+
 ### Alpaca IEX vs SIP
 
 `ALPACA_DATA_FEED=iex` is the default and is safest for Alpaca free/basic market
