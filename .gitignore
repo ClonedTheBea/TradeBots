@@ -10,3 +10,4 @@ uploads/
 *.sqlite
 *.sqlite3
 debug_screenshots/
+TradeBotsAI/data/automation_config.json

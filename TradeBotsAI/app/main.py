@@ -90,9 +90,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Append even when the parsed game date matches the last CSV row",
     )
-    subparsers.add_parser(
+    mouse_pos_parser = subparsers.add_parser(
         "mouse-pos",
         help="Print the current mouse position every 0.5 seconds for STEP calibration",
+    )
+    mouse_pos_parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Only print coordinates; do not save the last position for auto-step",
     )
 
     parser.add_argument("--csv", help="Path to OHLCV or close-only candle CSV data")
@@ -170,7 +175,7 @@ def main() -> int:
         from app.automation import run_mouse_position_printer
 
         try:
-            return run_mouse_position_printer()
+            return run_mouse_position_printer(save=not args.no_save)
         except RuntimeError as exc:
             print(exc)
             return 1

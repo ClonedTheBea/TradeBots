@@ -127,13 +127,27 @@ First calibrate the STEP button coordinate:
 python -m app.main mouse-pos
 ```
 
-Hover over the STEP button and copy the printed `x` and `y` values into:
+Hover over the STEP button, then press `Ctrl+C`. The last displayed position is
+saved to:
+
+```text
+data/automation_config.json
+```
+
+`auto-step` loads that saved coordinate automatically. To only print mouse
+coordinates without saving:
+
+```powershell
+python -m app.main mouse-pos --no-save
+```
+
+Fallback defaults still live in:
 
 ```text
 game_interface/config.py
 ```
 
-Update:
+The values are:
 
 ```python
 STEP_BUTTON_X = 350

@@ -2,7 +2,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.automation import append_price_if_new, last_recorded_timestamp
+from app.automation import (
+    append_price_if_new,
+    last_recorded_timestamp,
+    load_step_config,
+    save_step_config,
+)
+from game_interface.config import STEP_BUTTON_X, STEP_BUTTON_Y, STEP_DELAY_SECONDS
 
 
 class AutomationTests(unittest.TestCase):
@@ -39,6 +45,25 @@ class AutomationTests(unittest.TestCase):
             csv_path = Path(tmpdir) / "missing.csv"
 
             self.assertIsNone(last_recorded_timestamp(csv_path))
+
+    def test_step_config_defaults_when_runtime_config_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = load_step_config(Path(tmpdir) / "missing.json")
+
+        self.assertEqual(config["x"], STEP_BUTTON_X)
+        self.assertEqual(config["y"], STEP_BUTTON_Y)
+        self.assertEqual(config["delay_seconds"], STEP_DELAY_SECONDS)
+
+    def test_save_and_load_step_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "automation_config.json"
+
+            save_step_config(123, 456, delay_seconds=0.9, config_path=config_path)
+            config = load_step_config(config_path)
+
+        self.assertEqual(config["x"], 123)
+        self.assertEqual(config["y"], 456)
+        self.assertEqual(config["delay_seconds"], 0.9)
 
 
 if __name__ == "__main__":
