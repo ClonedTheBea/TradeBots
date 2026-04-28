@@ -287,11 +287,26 @@ Fetch market bars and get advice:
 python -m app.main alpaca-advice --symbol AAPL --timeframe 1Day --lookback 180
 ```
 
+You can also request advice for multiple symbols in one run:
+
+```powershell
+python -m app.main alpaca-advice --symbols AAPL,MSFT,TSLA --timeframe 1Day --lookback 180
+```
+
 Submit a paper order only when the advisory signal is BUY or SELL and position
 rules allow it:
 
 ```powershell
 python -m app.main alpaca-paper-trade --symbol AAPL --qty 1 --confirm-paper
+```
+
+For multiple symbols, the command fetches data, runs advisory, then only submits
+paper orders for non-HOLD signals that meet the confidence threshold and pass
+position rules. Use `--top-only` to trade only the highest-confidence eligible
+signal:
+
+```powershell
+python -m app.main alpaca-paper-trade --symbols AAPL,MSFT,TSLA --qty 1 --confirm-paper --confidence-threshold 0.50 --top-only
 ```
 
 Safety rules:
@@ -301,7 +316,37 @@ Safety rules:
 - SELL only runs when a paper position exists.
 - BUY only runs when no paper position exists.
 - Orders require `--confirm-paper`.
+- Multi-symbol paper trading only submits orders at or above
+  `--confidence-threshold` and can be limited with `--top-only`.
 - Signals, orders, and positions are logged to SQLite.
+
+### Server Scheduler
+
+Use `run-scheduler` to run repeated Alpaca paper-trading scans on a Windows
+server. By default it is a dry run and will not submit paper orders:
+
+```powershell
+python -m app.main run-scheduler --symbols AAPL,MSFT,TSLA --interval-minutes 15 --confidence-threshold 0.65
+```
+
+To allow Alpaca paper order submission, pass `--confirm-paper`:
+
+```powershell
+python -m app.main run-scheduler --symbols AAPL,MSFT,TSLA --interval-minutes 15 --confidence-threshold 0.65 --qty 1 --confirm-paper
+```
+
+Useful options:
+- `--market-hours-only` skips scans outside regular US weekday market hours
+  using a simple 9:30 AM to 4:00 PM New York time check.
+- `--top-only` submits only the highest-confidence eligible paper signal per
+  cycle.
+- `--timeframe` and `--lookback` match the Alpaca advice/trade commands.
+
+Each cycle prints start/end logs, catches per-symbol API errors, retries
+temporary API failures with backoff, and sleeps until the next interval. Stop it
+with `Ctrl+C`. Every advisory signal is saved to SQLite, and submitted, failed,
+dry-run, and skipped paper-trade decisions are recorded in
+`alpaca_trade_actions` with the skip reason.
 
 ### Alpaca IEX vs SIP
 

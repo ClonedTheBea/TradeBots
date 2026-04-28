@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+from app.output import print_advisory_output
 from data.csv_loader import load_candles_from_csv
 from strategy.signals import SignalEngine
 
@@ -39,8 +40,5 @@ def record_manual_step(csv_path: str | Path, signal_engine: SignalEngine, symbol
         raise
 
     signal = signal_engine.latest_signal(candles, symbol=symbol)
-    print(f"Decision: {signal.action}")
-    print(f"Confidence: {signal.confidence:.2f}")
-    print(f"Score: {signal.score:.2f}")
-    print(f"Reason: {signal.reason}")
+    print_advisory_output(symbol, signal)
     return 0

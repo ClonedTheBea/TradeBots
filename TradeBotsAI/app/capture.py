@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from app.output import print_advisory_output
 from app.recorder import append_close_price
 from data.csv_loader import load_candles_from_csv
 from strategy.signals import SignalEngine
@@ -70,10 +71,7 @@ def run_capture_once(
         raise
 
     signal = signal_engine.latest_signal(candles, symbol=symbol)
-    print(f"Decision: {signal.action}")
-    print(f"Confidence: {signal.confidence:.2f}")
-    print(f"Score: {signal.score:.2f}")
-    print(f"Reason: {signal.reason}")
+    print_advisory_output(symbol, signal)
     return 0
 
 

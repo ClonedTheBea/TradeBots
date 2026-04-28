@@ -105,6 +105,19 @@ class SQLiteStore:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS alpaca_trade_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                symbol TEXT NOT NULL,
+                action TEXT NOT NULL,
+                confidence REAL,
+                qty REAL,
+                status TEXT NOT NULL,
+                reason TEXT,
+                order_id TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE TABLE IF NOT EXISTS market_candles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 provider TEXT NOT NULL,
@@ -133,6 +146,37 @@ class SQLiteStore:
             "REAL NOT NULL DEFAULT 0",
         )
         conn.commit()
+
+    def save_alpaca_trade_action(
+        self,
+        symbol: str,
+        action: str,
+        status: str,
+        reason: str | None = None,
+        confidence: float | None = None,
+        qty: float | None = None,
+        order_id: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        self._conn().execute(
+            """
+            INSERT INTO alpaca_trade_actions (
+                session_id, symbol, action, confidence, qty, status, reason, order_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                symbol.upper(),
+                action,
+                confidence,
+                qty,
+                status,
+                reason,
+                order_id,
+            ),
+        )
+        self._conn().commit()
 
     def save_market_candles(
         self,

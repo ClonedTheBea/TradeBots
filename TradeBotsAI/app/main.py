@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import dataclass
+from datetime import datetime, time as datetime_time
 from pathlib import Path
+import time
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from app.capture import DEFAULT_LIVE_CSV, run_capture_once
+from app.output import print_advisory_output
 from app.recorder import record_manual_step
 from data.csv_loader import load_candles_from_csv
 from decision.advisor import build_advice
@@ -160,7 +165,8 @@ def parse_args() -> argparse.Namespace:
         "alpaca-advice",
         help="Fetch Alpaca paper market data and run advisory analysis",
     )
-    alpaca_advice_parser.add_argument("--symbol", required=True)
+    alpaca_advice_parser.add_argument("--symbol")
+    alpaca_advice_parser.add_argument("--symbols", help="Comma-separated symbols, e.g. AAPL,MSFT,TSLA")
     alpaca_advice_parser.add_argument("--timeframe", default="1Day")
     alpaca_advice_parser.add_argument("--lookback", type=int, default=180)
     alpaca_advice_parser.add_argument("--db", default="tradebots_ai.sqlite")
@@ -169,12 +175,39 @@ def parse_args() -> argparse.Namespace:
         "alpaca-paper-trade",
         help="Submit a confirmed Alpaca paper order from the advisory signal",
     )
-    alpaca_trade_parser.add_argument("--symbol", required=True)
+    alpaca_trade_parser.add_argument("--symbol")
+    alpaca_trade_parser.add_argument("--symbols", help="Comma-separated symbols, e.g. AAPL,MSFT,TSLA")
     alpaca_trade_parser.add_argument("--qty", type=float, required=True)
     alpaca_trade_parser.add_argument("--timeframe", default="1Day")
     alpaca_trade_parser.add_argument("--lookback", type=int, default=180)
     alpaca_trade_parser.add_argument("--confirm-paper", action="store_true")
+    alpaca_trade_parser.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=0.50,
+        help="Minimum signal confidence required before submitting a paper order",
+    )
+    alpaca_trade_parser.add_argument(
+        "--top-only",
+        action="store_true",
+        help="Only trade the highest-confidence eligible signal",
+    )
     alpaca_trade_parser.add_argument("--db", default="tradebots_ai.sqlite")
+
+    scheduler_parser = subparsers.add_parser(
+        "run-scheduler",
+        help="Run repeated Alpaca paper-trading scans for server use",
+    )
+    scheduler_parser.add_argument("--symbols", required=True, help="Comma-separated symbols, e.g. AAPL,MSFT,TSLA")
+    scheduler_parser.add_argument("--interval-minutes", type=float, default=15)
+    scheduler_parser.add_argument("--confidence-threshold", type=float, default=0.65)
+    scheduler_parser.add_argument("--qty", type=float, default=1.0)
+    scheduler_parser.add_argument("--timeframe", default="1Day")
+    scheduler_parser.add_argument("--lookback", type=int, default=180)
+    scheduler_parser.add_argument("--confirm-paper", action="store_true")
+    scheduler_parser.add_argument("--top-only", action="store_true")
+    scheduler_parser.add_argument("--market-hours-only", action="store_true")
+    scheduler_parser.add_argument("--db", default="tradebots_ai.sqlite")
 
     for command_name, help_text in (
         ("marketstack-fetch", "Fetch MarketStack OHLCV candles and save them locally"),
@@ -326,14 +359,30 @@ def main() -> int:
             print(exc)
             return 1
     if args.command == "alpaca-advice":
-        return run_alpaca_advice(args.symbol, args.timeframe, args.lookback, args.db)
+        return run_alpaca_advice(args.symbol, args.symbols, args.timeframe, args.lookback, args.db)
     if args.command == "alpaca-paper-trade":
         return run_alpaca_paper_trade(
             args.symbol,
+            args.symbols,
             args.qty,
             args.timeframe,
             args.lookback,
             args.confirm_paper,
+            args.confidence_threshold,
+            args.top_only,
+            args.db,
+        )
+    if args.command == "run-scheduler":
+        return run_scheduler(
+            args.symbols,
+            args.interval_minutes,
+            args.confidence_threshold,
+            args.qty,
+            args.timeframe,
+            args.lookback,
+            args.confirm_paper,
+            args.top_only,
+            args.market_hours_only,
             args.db,
         )
     if args.command == "marketstack-fetch":
@@ -432,11 +481,7 @@ def main() -> int:
 
     advice = build_advice(signal, result)
 
-    print(f"Decision: {advice.action}")
-    print(f"Raw Confidence: {advice.raw_confidence:.2f}")
-    print(f"Adjusted Confidence: {advice.adjusted_confidence:.2f}")
-    print(f"Score: {signal.score:.2f}")
-    print(f"Reason: {advice.reason}")
+    print_advisory_output(args.symbol, signal, advice)
     print(f"Session: {session_id}")
     print(
         "Backtest: "
@@ -453,35 +498,63 @@ def main() -> int:
     return 0
 
 
-def run_alpaca_advice(symbol: str, timeframe: str, lookback: int, db_path: str) -> int:
+@dataclass(frozen=True)
+class AlpacaAdviceResult:
+    symbol: str
+    signal: object
+    position: object | None
+    error: str | None = None
+    submitted_order: object | None = None
+    skipped_reason: str | None = None
+
+
+def run_alpaca_advice(
+    symbol: str | None,
+    symbols_text: str | None,
+    timeframe: str,
+    lookback: int,
+    db_path: str,
+) -> int:
     from broker.alpaca_client import AlpacaPaperClient
 
     try:
         client = AlpacaPaperClient.from_env()
-        candles = client.get_bars(symbol, timeframe=timeframe, lookback=lookback)
     except (RuntimeError, ValueError) as exc:
         print(exc)
         return 1
 
-    signal_engine = SignalEngine(SignalConfig())
-    signal = signal_engine.latest_signal(candles, symbol=symbol.upper())
-    position = client.get_position(symbol.upper())
+    try:
+        symbols = _parse_symbol_list(symbol, symbols_text)
+    except ValueError as exc:
+        print(exc)
+        return 1
 
+    results: list[AlpacaAdviceResult] = []
+    signal_engine = SignalEngine(SignalConfig())
     with SQLiteStore(db_path) as store:
         store.initialize()
-        store.save_signal(signal, session_id=f"alpaca-advice-{symbol.upper()}")
-        store.save_alpaca_position(position, symbol=symbol.upper())
+        for normalized_symbol in symbols:
+            try:
+                candles = client.get_bars(normalized_symbol, timeframe=timeframe, lookback=lookback)
+                signal = signal_engine.latest_signal(candles, symbol=normalized_symbol)
+                position = client.get_position(normalized_symbol)
+                store.save_signal(signal, session_id=f"alpaca-advice-{normalized_symbol}")
+                store.save_alpaca_position(position, symbol=normalized_symbol)
+                results.append(AlpacaAdviceResult(normalized_symbol, signal, position))
+            except (RuntimeError, ValueError) as exc:
+                results.append(AlpacaAdviceResult(normalized_symbol, None, None, error=str(exc)))
 
-    print(f"Alpaca paper advice for {symbol.upper()}")
-    print(f"Action: {signal.action}")
-    print(f"Confidence: {signal.confidence:.2f}")
-    print(f"Score: {signal.score:.2f}")
-    print(f"Reason: {signal.reason}")
-    if position:
-        print(f"Paper position: qty={position.qty:g}, market_value={position.market_value}")
-    else:
-        print("Paper position: none")
-    return 0
+    if len(results) == 1 and results[0].error is None:
+        result = results[0]
+        print("Alpaca paper advice")
+        print_advisory_output(result.symbol, result.signal)
+        if result.position:
+            print(f"Paper position: qty={result.position.qty:g}, market_value={result.position.market_value}")
+        else:
+            print("Paper position: none")
+
+    _print_alpaca_summary(results)
+    return 1 if any(result.error for result in results) else 0
 
 
 def run_marketstack_fetch(
@@ -545,12 +618,8 @@ def run_marketstack_advice(
         store.save_market_candles(candles, "marketstack", normalized_symbol, timeframe)
         store.save_signal(signal, session_id=session_id)
 
-    print(f"MarketStack advice for {normalized_symbol} ({timeframe})")
-    print(f"Action: {advice.action}")
-    print(f"Confidence: {advice.adjusted_confidence:.2f}")
-    print(f"Raw Confidence: {advice.raw_confidence:.2f}")
-    print(f"Score: {signal.score:.2f}")
-    print(f"Reason: {advice.reason}")
+    print(f"MarketStack advice ({timeframe})")
+    print_advisory_output(normalized_symbol, signal, advice)
     print(f"Session: {session_id}")
     return 0
 
@@ -691,11 +760,14 @@ def _write_candles_csv(candles, output_csv: str) -> None:
 
 
 def run_alpaca_paper_trade(
-    symbol: str,
+    symbol: str | None,
+    symbols_text: str | None,
     qty: float,
     timeframe: str,
     lookback: int,
     confirm_paper: bool,
+    confidence_threshold: float,
+    top_only: bool,
     db_path: str,
 ) -> int:
     from broker.alpaca_client import AlpacaPaperClient
@@ -703,46 +775,354 @@ def run_alpaca_paper_trade(
     if not confirm_paper:
         print("Refusing to submit paper order: pass --confirm-paper to confirm.")
         return 1
+    if not 0 <= confidence_threshold <= 1:
+        print("confidence-threshold must be between 0 and 1.")
+        return 1
 
     try:
         client = AlpacaPaperClient.from_env()
-        candles = client.get_bars(symbol, timeframe=timeframe, lookback=lookback)
+        symbols = _parse_symbol_list(symbol, symbols_text)
     except (RuntimeError, ValueError) as exc:
         print(exc)
         return 1
 
-    normalized_symbol = symbol.upper()
-    signal = SignalEngine(SignalConfig()).latest_signal(candles, symbol=normalized_symbol)
-    position = client.get_position(normalized_symbol)
+    results = _run_alpaca_trade_scan(
+        client=client,
+        symbols=symbols,
+        qty=qty,
+        timeframe=timeframe,
+        lookback=lookback,
+        confidence_threshold=confidence_threshold,
+        top_only=top_only,
+        execute_orders=True,
+        db_path=db_path,
+        session_id=f"alpaca-paper-trade-{uuid4().hex}",
+    )
+    _print_alpaca_trade_results(results, qty)
+    return 1 if any(result.error for result in results) else 0
 
-    print(f"Advisory action for {normalized_symbol}: {signal.action} confidence={signal.confidence:.2f}")
-    if signal.action == "HOLD":
-        print("No paper order submitted: HOLD signal.")
-        return 0
-    if signal.action == "BUY" and position is not None:
-        print("BUY skipped: existing paper position found.")
-        return 0
-    if signal.action == "SELL" and position is None:
-        print("SELL skipped: no paper position exists. No shorting allowed.")
-        return 0
+
+def run_scheduler(
+    symbols_text: str,
+    interval_minutes: float,
+    confidence_threshold: float,
+    qty: float,
+    timeframe: str,
+    lookback: int,
+    confirm_paper: bool,
+    top_only: bool,
+    market_hours_only: bool,
+    db_path: str,
+    max_cycles: int | None = None,
+) -> int:
+    from broker.alpaca_client import AlpacaPaperClient
+
+    if interval_minutes <= 0:
+        print("interval-minutes must be positive.")
+        return 1
+    if not 0 <= confidence_threshold <= 1:
+        print("confidence-threshold must be between 0 and 1.")
+        return 1
 
     try:
-        order = client.submit_paper_order(normalized_symbol, qty=qty, side=signal.action)
-        new_position = client.get_position(normalized_symbol)
+        symbols = _parse_symbol_list(None, symbols_text)
+        client = AlpacaPaperClient.from_env()
     except (RuntimeError, ValueError) as exc:
         print(exc)
         return 1
 
+    mode = "confirmed paper execution" if confirm_paper else "dry run"
+    print(
+        f"Starting scheduler for {', '.join(symbols)} every {interval_minutes:g} minutes "
+        f"({mode})."
+    )
+    if not confirm_paper:
+        print("Dry-run mode: pass --confirm-paper to submit Alpaca paper orders.")
+
+    cycle = 0
+    interval_seconds = interval_minutes * 60
+    try:
+        while max_cycles is None or cycle < max_cycles:
+            cycle += 1
+            cycle_id = f"scheduler-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
+            cycle_started_at = datetime.now().isoformat(timespec="seconds")
+            print(f"[{cycle_started_at}] Scheduler cycle {cycle} start: {cycle_id}")
+
+            if market_hours_only and not _is_us_market_hours():
+                print("Outside regular US market hours; skipping scan.")
+            else:
+                results = _run_alpaca_trade_scan(
+                    client=client,
+                    symbols=symbols,
+                    qty=qty,
+                    timeframe=timeframe,
+                    lookback=lookback,
+                    confidence_threshold=confidence_threshold,
+                    top_only=top_only,
+                    execute_orders=confirm_paper,
+                    db_path=db_path,
+                    session_id=cycle_id,
+                )
+                _print_alpaca_trade_results(results, qty)
+
+            print(f"[{datetime.now().isoformat(timespec='seconds')}] Scheduler cycle {cycle} end: {cycle_id}")
+            if max_cycles is not None and cycle >= max_cycles:
+                break
+            print(f"Sleeping {interval_minutes:g} minutes until next cycle.")
+            time.sleep(interval_seconds)
+    except KeyboardInterrupt:
+        print("Scheduler stopped by Ctrl+C.")
+        return 0
+    return 0
+
+
+def _run_alpaca_trade_scan(
+    client,
+    symbols: list[str],
+    qty: float,
+    timeframe: str,
+    lookback: int,
+    confidence_threshold: float,
+    top_only: bool,
+    execute_orders: bool,
+    db_path: str,
+    session_id: str,
+) -> list[AlpacaAdviceResult]:
+    results: list[AlpacaAdviceResult] = []
+    signal_engine = SignalEngine(SignalConfig())
     with SQLiteStore(db_path) as store:
         store.initialize()
-        store.save_signal(signal, session_id=f"alpaca-paper-trade-{normalized_symbol}")
-        store.save_alpaca_order(order)
-        store.save_alpaca_position(new_position, symbol=normalized_symbol)
+        for normalized_symbol in symbols:
+            try:
+                candles = _with_api_retries(
+                    lambda symbol=normalized_symbol: client.get_bars(
+                        symbol,
+                        timeframe=timeframe,
+                        lookback=lookback,
+                    ),
+                    f"fetch bars for {normalized_symbol}",
+                )
+                signal = signal_engine.latest_signal(candles, symbol=normalized_symbol)
+                position = _with_api_retries(
+                    lambda symbol=normalized_symbol: client.get_position(symbol),
+                    f"fetch position for {normalized_symbol}",
+                )
+                store.save_signal(signal, session_id=session_id)
+                store.save_alpaca_position(position, symbol=normalized_symbol)
+                results.append(AlpacaAdviceResult(normalized_symbol, signal, position))
+            except Exception as exc:
+                print(f"{normalized_symbol} scan failed: {exc}")
+                results.append(AlpacaAdviceResult(normalized_symbol, None, None, error=str(exc)))
 
-    print(f"Submitted Alpaca PAPER {signal.action} order for {qty:g} {normalized_symbol}")
-    print(f"Order id: {order.order_id}")
-    print(f"Status: {order.status}")
-    return 0
+        candidates = _select_alpaca_trade_candidates(results, confidence_threshold, top_only)
+        candidate_symbols = {result.symbol for result in candidates}
+        updated_results: list[AlpacaAdviceResult] = []
+        for result in results:
+            if result.error is not None:
+                updated_results.append(result)
+                continue
+
+            skip_reason = _alpaca_trade_skip_reason(result, confidence_threshold)
+            if result.symbol not in candidate_symbols:
+                skip_reason = skip_reason or "top-only not selected"
+            if skip_reason:
+                skipped = AlpacaAdviceResult(
+                    result.symbol,
+                    result.signal,
+                    result.position,
+                    skipped_reason=skip_reason,
+                )
+                _save_alpaca_trade_action(store, skipped, qty, "skipped", session_id)
+                updated_results.append(skipped)
+                continue
+
+            if not execute_orders:
+                dry_run = AlpacaAdviceResult(
+                    result.symbol,
+                    result.signal,
+                    result.position,
+                    skipped_reason="dry run: pass --confirm-paper to submit order",
+                )
+                _save_alpaca_trade_action(store, dry_run, qty, "dry_run", session_id)
+                updated_results.append(dry_run)
+                continue
+
+            try:
+                order = _with_api_retries(
+                    lambda result=result: client.submit_paper_order(
+                        result.symbol,
+                        qty=qty,
+                        side=result.signal.action,
+                    ),
+                    f"submit paper order for {result.symbol}",
+                )
+                new_position = _with_api_retries(
+                    lambda symbol=result.symbol: client.get_position(symbol),
+                    f"fetch post-order position for {result.symbol}",
+                )
+                store.save_alpaca_order(order)
+                store.save_alpaca_position(new_position, symbol=result.symbol)
+                submitted = AlpacaAdviceResult(
+                    result.symbol,
+                    result.signal,
+                    new_position,
+                    submitted_order=order,
+                )
+                _save_alpaca_trade_action(store, submitted, qty, "submitted", session_id)
+                updated_results.append(submitted)
+            except Exception as exc:
+                failed = AlpacaAdviceResult(
+                    result.symbol,
+                    result.signal,
+                    result.position,
+                    error=str(exc),
+                )
+                _save_alpaca_trade_action(store, failed, qty, "failed", session_id, reason=str(exc))
+                print(f"{result.symbol} order attempt failed: {exc}")
+                updated_results.append(failed)
+        return updated_results
+
+
+def _save_alpaca_trade_action(
+    store: SQLiteStore,
+    result: AlpacaAdviceResult,
+    qty: float,
+    status: str,
+    session_id: str,
+    reason: str | None = None,
+) -> None:
+    signal = result.signal
+    order = result.submitted_order
+    store.save_alpaca_trade_action(
+        symbol=result.symbol,
+        action=getattr(signal, "action", "ERROR"),
+        status=status,
+        reason=reason or result.skipped_reason,
+        confidence=getattr(signal, "confidence", None),
+        qty=qty,
+        order_id=getattr(order, "order_id", None),
+        session_id=session_id,
+    )
+
+
+def _print_alpaca_trade_results(results: list[AlpacaAdviceResult], qty: float) -> None:
+    _print_alpaca_summary(results)
+    for result in results:
+        if result.submitted_order is not None:
+            print(f"Submitted Alpaca PAPER {result.signal.action} order for {qty:g} {result.symbol}")
+            print(f"Order id: {result.submitted_order.order_id}")
+            print(f"Status: {result.submitted_order.status}")
+        elif result.skipped_reason:
+            print(f"{result.symbol} skipped: {result.skipped_reason}")
+        elif result.error:
+            print(f"{result.symbol} failed: {result.error}")
+
+
+def _parse_symbol_list(symbol: str | None, symbols_text: str | None) -> list[str]:
+    raw_symbols: list[str] = []
+    if symbol:
+        raw_symbols.append(symbol)
+    if symbols_text:
+        raw_symbols.extend(symbols_text.split(","))
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for raw_symbol in raw_symbols:
+        normalized = raw_symbol.strip().upper()
+        if not normalized:
+            continue
+        if normalized not in seen:
+            symbols.append(normalized)
+            seen.add(normalized)
+    if not symbols:
+        raise ValueError("Pass --symbol or --symbols.")
+    return symbols
+
+
+def _select_alpaca_trade_candidates(
+    results: list[AlpacaAdviceResult],
+    confidence_threshold: float,
+    top_only: bool,
+) -> list[AlpacaAdviceResult]:
+    candidates = [
+        result
+        for result in results
+        if result.error is None and _alpaca_trade_skip_reason(result, confidence_threshold) is None
+    ]
+    if top_only and candidates:
+        return [max(candidates, key=lambda result: result.signal.confidence)]
+    return candidates
+
+
+def _alpaca_trade_skip_reason(result: AlpacaAdviceResult, confidence_threshold: float) -> str | None:
+    signal = result.signal
+    if signal.action == "HOLD":
+        return "HOLD"
+    if signal.confidence < confidence_threshold:
+        return "confidence below threshold"
+    if signal.action == "BUY" and result.position is not None:
+        return "already holding"
+    if signal.action == "SELL" and result.position is None:
+        return "no position to sell"
+    return None
+
+
+def _print_alpaca_summary(results: list[AlpacaAdviceResult]) -> None:
+    print("Summary:")
+    for result in results:
+        print(_format_alpaca_summary_line(result))
+
+
+def _format_alpaca_summary_line(result: AlpacaAdviceResult) -> str:
+    if result.error is not None:
+        return f"{result.symbol} \u2192 ERROR ({result.error})"
+    marker = ""
+    if result.submitted_order is not None:
+        marker = " \u2705"
+    elif result.skipped_reason:
+        marker = f" ({result.skipped_reason})"
+    elif result.signal.action == "SELL":
+        marker = " \u26a0 (if holding)" if result.position is not None else " \u26a0 (no holding)"
+    return f"{result.symbol} \u2192 {result.signal.action} ({result.signal.confidence:.2f}){marker}"
+
+
+def _with_api_retries(operation, label: str, max_attempts: int = 3, base_delay_seconds: float = 1.0):
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return operation()
+        except Exception as exc:
+            if attempt >= max_attempts or not _is_temporary_api_error(exc):
+                raise
+            delay = base_delay_seconds * (2 ** (attempt - 1))
+            print(f"Temporary API error during {label}: {exc}. Retrying in {delay:g}s.")
+            time.sleep(delay)
+    raise RuntimeError(f"{label} failed after retries")
+
+
+def _is_temporary_api_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    temporary_markers = (
+        "429",
+        "rate limit",
+        "timeout",
+        "temporar",
+        "connection",
+        "500",
+        "502",
+        "503",
+        "504",
+        "service unavailable",
+    )
+    return any(marker in text for marker in temporary_markers)
+
+
+def _is_us_market_hours(now: datetime | None = None) -> bool:
+    eastern = ZoneInfo("America/New_York")
+    current = now.astimezone(eastern) if now else datetime.now(eastern)
+    if current.weekday() >= 5:
+        return False
+    market_open = datetime_time(9, 30)
+    market_close = datetime_time(16, 0)
+    return market_open <= current.time() <= market_close
 
 
 def run_watch_screen(csv_path: str, symbol: str, hotkey: str, debug: bool) -> int:
@@ -789,10 +1169,7 @@ def run_watch_screen(csv_path: str, symbol: str, hotkey: str, debug: bool) -> in
                 raise
 
             signal = signal_engine.latest_signal(candles, symbol=symbol)
-            print(f"Recommendation: {signal.action}")
-            print(f"Confidence: {signal.confidence:.2f}")
-            print(f"Score: {signal.score:.2f}")
-            print(f"Reasons: {signal.reason}")
+            print_advisory_output(symbol, signal)
         except Exception as exc:
             print(f"Capture failed: {exc}")
 
