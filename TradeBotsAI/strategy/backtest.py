@@ -12,6 +12,8 @@ from strategy.signals import SignalEngine
 class BacktestConfig:
     starting_cash: float = 10_000.0
     position_fraction: float = 1.0
+    stop_loss_pct: float | None = None
+    take_profit_pct: float | None = None
 
 
 class Backtester:
@@ -54,7 +56,7 @@ class Backtester:
                 cash -= allocation
                 entry_price = candle.close
                 entry_time = candle.timestamp
-            elif signal.action == "SELL" and quantity > 0:
+            elif quantity > 0 and _should_exit_position(candle.close, entry_price, signal.action, self.config):
                 proceeds = quantity * candle.close
                 cash += proceeds
                 trades.append(
@@ -65,7 +67,7 @@ class Backtester:
                         entry_price=entry_price,
                         exit_price=candle.close,
                         quantity=quantity,
-                        reason=signal.reason,
+                        reason=_exit_reason(candle.close, entry_price, signal.action, signal.reason, self.config),
                     )
                 )
                 quantity = 0.0
@@ -144,6 +146,41 @@ def _max_drawdown_pct(equity_curve: list[float]) -> float:
             drawdown = ((peak - equity) / peak) * 100
             max_drawdown = max(max_drawdown, drawdown)
     return max_drawdown
+
+
+def _should_exit_position(
+    close: float,
+    entry_price: float,
+    signal_action: str,
+    config: BacktestConfig,
+) -> bool:
+    if signal_action == "SELL":
+        return True
+    if entry_price <= 0:
+        return False
+    change_pct = ((close - entry_price) / entry_price) * 100
+    if config.stop_loss_pct is not None and change_pct <= -abs(config.stop_loss_pct):
+        return True
+    if config.take_profit_pct is not None and change_pct >= abs(config.take_profit_pct):
+        return True
+    return False
+
+
+def _exit_reason(
+    close: float,
+    entry_price: float,
+    signal_action: str,
+    signal_reason: str,
+    config: BacktestConfig,
+) -> str:
+    if signal_action == "SELL" or entry_price <= 0:
+        return signal_reason
+    change_pct = ((close - entry_price) / entry_price) * 100
+    if config.stop_loss_pct is not None and change_pct <= -abs(config.stop_loss_pct):
+        return f"stop loss hit at {change_pct:.2f}%"
+    if config.take_profit_pct is not None and change_pct >= abs(config.take_profit_pct):
+        return f"take profit hit at {change_pct:.2f}%"
+    return signal_reason
 
 
 def _signal_start_index(signal_engine: SignalEngine) -> int:

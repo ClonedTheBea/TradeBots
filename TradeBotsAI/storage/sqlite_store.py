@@ -84,6 +84,28 @@ class SQLiteStore:
                 last_updated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS strategy_parameters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                lookback_days INTEGER NOT NULL,
+                sma_short INTEGER NOT NULL,
+                sma_long INTEGER NOT NULL,
+                rsi_buy REAL NOT NULL,
+                rsi_sell REAL NOT NULL,
+                buy_score_threshold REAL NOT NULL,
+                sell_score_threshold REAL NOT NULL,
+                stop_loss_pct REAL NOT NULL,
+                take_profit_pct REAL NOT NULL,
+                total_return_pct REAL NOT NULL,
+                max_drawdown_pct REAL NOT NULL,
+                win_rate_pct REAL NOT NULL,
+                trade_count INTEGER NOT NULL,
+                score REAL NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                is_active INTEGER NOT NULL DEFAULT 1
+            );
+
             CREATE TABLE IF NOT EXISTS backtest_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
@@ -334,6 +356,73 @@ class SQLiteStore:
             params,
         )
         return [_trade_row_to_dict(row) for row in cursor.fetchall()]
+
+    def save_strategy_parameters(
+        self,
+        params: dict[str, Any],
+        active: bool = True,
+    ) -> int:
+        symbol = str(params["symbol"]).upper()
+        timeframe = str(params["timeframe"])
+        if active:
+            self._conn().execute(
+                """
+                UPDATE strategy_parameters
+                SET is_active = 0
+                WHERE symbol = ? AND timeframe = ? AND is_active = 1
+                """,
+                (symbol, timeframe),
+            )
+        cursor = self._conn().execute(
+            """
+            INSERT INTO strategy_parameters (
+                symbol, timeframe, lookback_days, sma_short, sma_long,
+                rsi_buy, rsi_sell, buy_score_threshold, sell_score_threshold,
+                stop_loss_pct, take_profit_pct, total_return_pct,
+                max_drawdown_pct, win_rate_pct, trade_count, score, is_active
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                symbol,
+                timeframe,
+                int(params["lookback_days"]),
+                int(params["sma_short"]),
+                int(params["sma_long"]),
+                float(params["rsi_buy"]),
+                float(params["rsi_sell"]),
+                float(params["buy_score_threshold"]),
+                float(params["sell_score_threshold"]),
+                float(params["stop_loss_pct"]),
+                float(params["take_profit_pct"]),
+                float(params["total_return_pct"]),
+                float(params["max_drawdown_pct"]),
+                float(params["win_rate_pct"]),
+                int(params["trade_count"]),
+                float(params["score"]),
+                1 if active else 0,
+            ),
+        )
+        self._conn().commit()
+        return int(cursor.lastrowid)
+
+    def get_active_strategy_parameters(self, symbol: str, timeframe: str) -> dict[str, Any] | None:
+        cursor = self._conn().execute(
+            """
+            SELECT
+                id, symbol, timeframe, lookback_days, sma_short, sma_long,
+                rsi_buy, rsi_sell, buy_score_threshold, sell_score_threshold,
+                stop_loss_pct, take_profit_pct, total_return_pct,
+                max_drawdown_pct, win_rate_pct, trade_count, score, created_at, is_active
+            FROM strategy_parameters
+            WHERE symbol = ? AND timeframe = ? AND is_active = 1
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (symbol.upper(), timeframe),
+        )
+        row = cursor.fetchone()
+        return _strategy_params_row_to_dict(row) if row else None
 
     def save_market_candles(
         self,
@@ -695,3 +784,27 @@ def _parse_datetime(value: str) -> Any:
         return datetime.fromisoformat(normalized)
     except ValueError:
         return datetime.strptime(value, "%Y-%m-%d")
+
+
+def _strategy_params_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "id": row[0],
+        "symbol": row[1],
+        "timeframe": row[2],
+        "lookback_days": row[3],
+        "sma_short": row[4],
+        "sma_long": row[5],
+        "rsi_buy": row[6],
+        "rsi_sell": row[7],
+        "buy_score_threshold": row[8],
+        "sell_score_threshold": row[9],
+        "stop_loss_pct": row[10],
+        "take_profit_pct": row[11],
+        "total_return_pct": row[12],
+        "max_drawdown_pct": row[13],
+        "win_rate_pct": row[14],
+        "trade_count": row[15],
+        "score": row[16],
+        "created_at": row[17],
+        "is_active": bool(row[18]),
+    }

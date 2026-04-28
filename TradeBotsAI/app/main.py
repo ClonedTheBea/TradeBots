@@ -217,6 +217,36 @@ def parse_args() -> argparse.Namespace:
     performance_parser.add_argument("--since", type=int, help="Filter completed trades from the last DAYS days")
     performance_parser.add_argument("--db", default="tradebots_ai.sqlite")
 
+    tune_parser = subparsers.add_parser(
+        "tune-symbol",
+        help="Tune and save strategy parameters for one symbol",
+    )
+    tune_parser.add_argument("--symbol", required=True)
+    tune_parser.add_argument("--timeframe", default="1Day")
+    tune_parser.add_argument("--lookback", type=int, default=365)
+    tune_parser.add_argument("--trials", type=int, default=100)
+    tune_parser.add_argument("--minimum-trades", type=int, default=3)
+    tune_parser.add_argument("--db", default="tradebots_ai.sqlite")
+
+    tune_symbols_parser = subparsers.add_parser(
+        "tune-symbols",
+        help="Tune and save strategy parameters for multiple symbols",
+    )
+    tune_symbols_parser.add_argument("--symbols", required=True)
+    tune_symbols_parser.add_argument("--timeframe", default="1Day")
+    tune_symbols_parser.add_argument("--lookback", type=int, default=365)
+    tune_symbols_parser.add_argument("--trials", type=int, default=100)
+    tune_symbols_parser.add_argument("--minimum-trades", type=int, default=3)
+    tune_symbols_parser.add_argument("--db", default="tradebots_ai.sqlite")
+
+    show_params_parser = subparsers.add_parser(
+        "show-params",
+        help="Show active tuned strategy parameters for a symbol",
+    )
+    show_params_parser.add_argument("--symbol", required=True)
+    show_params_parser.add_argument("--timeframe", default="1Day")
+    show_params_parser.add_argument("--db", default="tradebots_ai.sqlite")
+
     for command_name, help_text in (
         ("marketstack-fetch", "Fetch MarketStack OHLCV candles and save them locally"),
         ("marketstack-advice", "Fetch MarketStack candles and run advisory analysis"),
@@ -395,6 +425,26 @@ def main() -> int:
         )
     if args.command == "performance-report":
         return run_performance_report(args.db, args.last, args.since)
+    if args.command == "tune-symbol":
+        return run_tune_symbols(
+            args.symbol,
+            args.timeframe,
+            args.lookback,
+            args.trials,
+            args.minimum_trades,
+            args.db,
+        )
+    if args.command == "tune-symbols":
+        return run_tune_symbols(
+            args.symbols,
+            args.timeframe,
+            args.lookback,
+            args.trials,
+            args.minimum_trades,
+            args.db,
+        )
+    if args.command == "show-params":
+        return run_show_params(args.symbol, args.timeframe, args.db)
     if args.command == "marketstack-fetch":
         return run_marketstack_fetch(
             args.symbol,
@@ -540,12 +590,13 @@ def run_alpaca_advice(
         return 1
 
     results: list[AlpacaAdviceResult] = []
-    signal_engine = SignalEngine(SignalConfig())
     with SQLiteStore(db_path) as store:
         store.initialize()
         for normalized_symbol in symbols:
             try:
                 candles = client.get_bars(normalized_symbol, timeframe=timeframe, lookback=lookback)
+                signal_engine, param_source = _signal_engine_for_symbol(store, normalized_symbol, timeframe)
+                print(f"{normalized_symbol}: using {param_source} strategy parameters.")
                 signal = signal_engine.latest_signal(candles, symbol=normalized_symbol)
                 position = client.get_position(normalized_symbol)
                 store.save_signal(signal, session_id=f"alpaca-advice-{normalized_symbol}")
@@ -612,21 +663,21 @@ def run_marketstack_advice(
         return 1
 
     normalized_symbol = symbol.upper()
-    signal_engine = SignalEngine(SignalConfig())
     session_id = f"marketstack-advice-{normalized_symbol}-{uuid4().hex}"
     try:
-        signal = signal_engine.latest_signal(candles, symbol=normalized_symbol)
-        backtester = Backtester(signal_engine, BacktestConfig())
-        result = backtester.run(candles, symbol=normalized_symbol)
-        advice = build_advice(signal, result)
+        with SQLiteStore(db_path) as store:
+            store.initialize()
+            signal_engine, param_source = _signal_engine_for_symbol(store, normalized_symbol, timeframe)
+            print(f"{normalized_symbol}: using {param_source} strategy parameters.")
+            signal = signal_engine.latest_signal(candles, symbol=normalized_symbol)
+            backtester = Backtester(signal_engine, BacktestConfig())
+            result = backtester.run(candles, symbol=normalized_symbol)
+            advice = build_advice(signal, result)
+            store.save_market_candles(candles, "marketstack", normalized_symbol, timeframe)
+            store.save_signal(signal, session_id=session_id)
     except ValueError as exc:
         print(exc)
         return 1
-
-    with SQLiteStore(db_path) as store:
-        store.initialize()
-        store.save_market_candles(candles, "marketstack", normalized_symbol, timeframe)
-        store.save_signal(signal, session_id=session_id)
 
     print(f"MarketStack advice ({timeframe})")
     print_advisory_output(normalized_symbol, signal, advice)
@@ -900,6 +951,82 @@ def run_performance_report(db_path: str, last: int | None, since_days: int | Non
     return 0
 
 
+def run_tune_symbols(
+    symbols_text: str,
+    timeframe: str,
+    lookback: int,
+    trials: int,
+    minimum_trades: int,
+    db_path: str,
+) -> int:
+    from broker.alpaca_client import AlpacaPaperClient
+    from strategy.tuner import TuningConfig, tune_strategy_for_symbol, tuning_result_to_storage_params
+
+    try:
+        symbols = _parse_symbol_list(None, symbols_text)
+        client = AlpacaPaperClient.from_env()
+    except (RuntimeError, ValueError) as exc:
+        print(exc)
+        return 1
+
+    exit_code = 0
+    with SQLiteStore(db_path) as store:
+        store.initialize()
+        for symbol in symbols:
+            print(f"Tuning {symbol} ({timeframe}, lookback={lookback}, trials={trials})")
+            try:
+                candles = _with_api_retries(
+                    lambda symbol=symbol: client.get_bars(symbol, timeframe=timeframe, lookback=lookback),
+                    f"fetch bars for {symbol}",
+                )
+                tuning = tune_strategy_for_symbol(
+                    candles,
+                    symbol,
+                    TuningConfig(trials=trials, minimum_trade_count=minimum_trades),
+                )
+                stored = tuning_result_to_storage_params(tuning, symbol, timeframe, lookback)
+                row_id = store.save_strategy_parameters(stored, active=True)
+                print(
+                    f"Saved active tuned params #{row_id} for {symbol}: "
+                    f"score={tuning.score:.2f} return={tuning.backtest.total_return_pct:.2f}% "
+                    f"drawdown={tuning.backtest.max_drawdown_pct:.2f}% "
+                    f"win_rate={tuning.backtest.win_rate * 100:.2f}% "
+                    f"trades={len(tuning.backtest.trades)}"
+                )
+            except (RuntimeError, ValueError) as exc:
+                print(f"{symbol} tuning failed: {exc}")
+                exit_code = 1
+    return exit_code
+
+
+def run_show_params(symbol: str, timeframe: str, db_path: str) -> int:
+    with SQLiteStore(db_path) as store:
+        store.initialize()
+        params = store.get_active_strategy_parameters(symbol, timeframe)
+    if params is None:
+        print(f"No active tuned parameters for {symbol.upper()} ({timeframe}). Defaults will be used.")
+        return 0
+    print(f"Active tuned parameters for {symbol.upper()} ({timeframe})")
+    for key in (
+        "sma_short",
+        "sma_long",
+        "rsi_buy",
+        "rsi_sell",
+        "buy_score_threshold",
+        "sell_score_threshold",
+        "stop_loss_pct",
+        "take_profit_pct",
+        "total_return_pct",
+        "max_drawdown_pct",
+        "win_rate_pct",
+        "trade_count",
+        "score",
+        "created_at",
+    ):
+        print(f"{key}: {params[key]}")
+    return 0
+
+
 def _build_performance_report(trades: list[dict]) -> str:
     if not trades:
         return "Summary:\n- Total trades: 0\n- Win rate: 0.00%\n- Total PnL: $0.00\n- Avg PnL per trade: $0.00\n- Best trade: n/a\n- Worst trade: n/a\n- Avg duration: 0.00 minutes\n\nPer-symbol breakdown:\nNo completed trades."
@@ -954,7 +1081,6 @@ def _run_alpaca_trade_scan(
     session_id: str,
 ) -> list[AlpacaAdviceResult]:
     results: list[AlpacaAdviceResult] = []
-    signal_engine = SignalEngine(SignalConfig())
     with SQLiteStore(db_path) as store:
         store.initialize()
         for normalized_symbol in symbols:
@@ -967,6 +1093,8 @@ def _run_alpaca_trade_scan(
                     ),
                     f"fetch bars for {normalized_symbol}",
                 )
+                signal_engine, param_source = _signal_engine_for_symbol(store, normalized_symbol, timeframe)
+                print(f"{normalized_symbol}: using {param_source} strategy parameters.")
                 signal = signal_engine.latest_signal(candles, symbol=normalized_symbol)
                 position = _with_api_retries(
                     lambda symbol=normalized_symbol: client.get_position(symbol),
@@ -1065,6 +1193,19 @@ def _run_alpaca_trade_scan(
                 print(f"{result.symbol} order attempt failed: {exc}")
                 updated_results.append(failed)
         return updated_results
+
+
+def _signal_engine_for_symbol(
+    store: SQLiteStore,
+    symbol: str,
+    timeframe: str,
+) -> tuple[SignalEngine, str]:
+    params = store.get_active_strategy_parameters(symbol, timeframe)
+    if params is None:
+        return SignalEngine(SignalConfig()), "default"
+    from strategy.tuner import signal_config_from_tuned_params
+
+    return SignalEngine(signal_config_from_tuned_params(params)), "tuned"
 
 
 def _save_alpaca_trade_action(

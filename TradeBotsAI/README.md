@@ -367,6 +367,34 @@ python -m app.main performance-report --since 30
 The report prints total trades, win rate, total and average PnL, best/worst
 trade, average duration, and a per-symbol breakdown.
 
+## Symbol Strategy Tuning
+
+Tune strategy parameters per symbol/timeframe with Optuna. Tuning is backtest
+only; it does not place orders and is not run automatically by the scheduler.
+
+```powershell
+python -m app.main tune-symbol --symbol BB --timeframe 1Day --lookback 365 --trials 100
+python -m app.main tune-symbols --symbols AAPL,BB,MSFT --timeframe 1Day --lookback 365 --trials 100
+```
+
+Show the active saved parameters:
+
+```powershell
+python -m app.main show-params --symbol BB --timeframe 1Day
+```
+
+The tuner searches SMA, RSI thresholds, score thresholds, stop-loss, and
+take-profit values. It saves the best active row in SQLite per symbol/timeframe
+and marks older rows inactive. Alpaca advice/trade scans and MarketStack advice
+load active tuned parameters automatically; if none exist, they print that
+defaults are being used.
+
+If Optuna is missing, install dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
 ### Alpaca IEX vs SIP
 
 `ALPACA_DATA_FEED=iex` is the default and is safest for Alpaca free/basic market
