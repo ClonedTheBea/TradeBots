@@ -102,6 +102,14 @@ class SQLiteStore:
                 win_rate_pct REAL NOT NULL,
                 trade_count INTEGER NOT NULL,
                 score REAL NOT NULL,
+                train_return_pct REAL,
+                validation_return_pct REAL,
+                train_drawdown_pct REAL,
+                validation_drawdown_pct REAL,
+                train_win_rate_pct REAL,
+                validation_win_rate_pct REAL,
+                validation_trade_count INTEGER,
+                overfit_warning TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 is_active INTEGER NOT NULL DEFAULT 1
             );
@@ -175,6 +183,14 @@ class SQLiteStore:
         self._ensure_column("signals", "reasons_json", "TEXT NOT NULL DEFAULT '[]'")
         self._ensure_column("signals", "reasons", "TEXT NOT NULL DEFAULT '[]'")
         self._migrate_trades_table_if_needed()
+        self._ensure_column("strategy_parameters", "train_return_pct", "REAL")
+        self._ensure_column("strategy_parameters", "validation_return_pct", "REAL")
+        self._ensure_column("strategy_parameters", "train_drawdown_pct", "REAL")
+        self._ensure_column("strategy_parameters", "validation_drawdown_pct", "REAL")
+        self._ensure_column("strategy_parameters", "train_win_rate_pct", "REAL")
+        self._ensure_column("strategy_parameters", "validation_win_rate_pct", "REAL")
+        self._ensure_column("strategy_parameters", "validation_trade_count", "INTEGER")
+        self._ensure_column("strategy_parameters", "overfit_warning", "TEXT")
         self._ensure_column("backtest_results", "signal_count", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column(
             "backtest_results",
@@ -379,9 +395,12 @@ class SQLiteStore:
                 symbol, timeframe, lookback_days, sma_short, sma_long,
                 rsi_buy, rsi_sell, buy_score_threshold, sell_score_threshold,
                 stop_loss_pct, take_profit_pct, total_return_pct,
-                max_drawdown_pct, win_rate_pct, trade_count, score, is_active
+                max_drawdown_pct, win_rate_pct, trade_count, score,
+                train_return_pct, validation_return_pct, train_drawdown_pct,
+                validation_drawdown_pct, train_win_rate_pct, validation_win_rate_pct,
+                validation_trade_count, overfit_warning, is_active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 symbol,
@@ -400,6 +419,14 @@ class SQLiteStore:
                 float(params["win_rate_pct"]),
                 int(params["trade_count"]),
                 float(params["score"]),
+                _optional_float(params.get("train_return_pct")),
+                _optional_float(params.get("validation_return_pct")),
+                _optional_float(params.get("train_drawdown_pct")),
+                _optional_float(params.get("validation_drawdown_pct")),
+                _optional_float(params.get("train_win_rate_pct")),
+                _optional_float(params.get("validation_win_rate_pct")),
+                _optional_int(params.get("validation_trade_count")),
+                params.get("overfit_warning"),
                 1 if active else 0,
             ),
         )
@@ -413,10 +440,18 @@ class SQLiteStore:
                 id, symbol, timeframe, lookback_days, sma_short, sma_long,
                 rsi_buy, rsi_sell, buy_score_threshold, sell_score_threshold,
                 stop_loss_pct, take_profit_pct, total_return_pct,
-                max_drawdown_pct, win_rate_pct, trade_count, score, created_at, is_active
+                max_drawdown_pct, win_rate_pct, trade_count, score,
+                train_return_pct, validation_return_pct, train_drawdown_pct,
+                validation_drawdown_pct, train_win_rate_pct, validation_win_rate_pct,
+                validation_trade_count, overfit_warning, created_at, is_active
             FROM strategy_parameters
             WHERE symbol = ? AND timeframe = ? AND is_active = 1
-            ORDER BY id DESC
+            ORDER BY
+                CASE
+                    WHEN overfit_warning IS NULL OR overfit_warning = '' THEN 0
+                    ELSE 1
+                END,
+                id DESC
             LIMIT 1
             """,
             (symbol.upper(), timeframe),
@@ -805,6 +840,22 @@ def _strategy_params_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
         "win_rate_pct": row[14],
         "trade_count": row[15],
         "score": row[16],
-        "created_at": row[17],
-        "is_active": bool(row[18]),
+        "train_return_pct": row[17],
+        "validation_return_pct": row[18],
+        "train_drawdown_pct": row[19],
+        "validation_drawdown_pct": row[20],
+        "train_win_rate_pct": row[21],
+        "validation_win_rate_pct": row[22],
+        "validation_trade_count": row[23],
+        "overfit_warning": row[24],
+        "created_at": row[25],
+        "is_active": bool(row[26]),
     }
+
+
+def _optional_float(value: Any) -> float | None:
+    return None if value is None else float(value)
+
+
+def _optional_int(value: Any) -> int | None:
+    return None if value is None else int(value)

@@ -27,6 +27,23 @@ def params(symbol="BB", score=1.0, sma_short=5, sma_long=30):
     }
 
 
+def validated_params(symbol="BB", warning=""):
+    payload = params(symbol=symbol, score=3.0)
+    payload.update(
+        {
+            "train_return_pct": 10.0,
+            "validation_return_pct": 4.0,
+            "train_drawdown_pct": 3.0,
+            "validation_drawdown_pct": 5.0,
+            "train_win_rate_pct": 60.0,
+            "validation_win_rate_pct": 50.0,
+            "validation_trade_count": 4,
+            "overfit_warning": warning,
+        }
+    )
+    return payload
+
+
 class StrategyParameterStorageTests(unittest.TestCase):
     def test_parameter_save_and_load(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -77,6 +94,18 @@ class StrategyParameterStorageTests(unittest.TestCase):
         self.assertEqual(source, "tuned")
         self.assertEqual(engine.config.short_sma_period, 4)
         self.assertEqual(engine.config.long_sma_period, 40)
+
+    def test_validation_metrics_save_and_load(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with SQLiteStore(Path(tmpdir) / "params.sqlite") as store:
+                store.initialize()
+                store.save_strategy_parameters(validated_params(), active=True)
+
+                loaded = store.get_active_strategy_parameters("BB", "1Day")
+
+        self.assertEqual(loaded["validation_return_pct"], 4.0)
+        self.assertEqual(loaded["validation_trade_count"], 4)
+        self.assertEqual(loaded["overfit_warning"], "")
 
 
 if __name__ == "__main__":

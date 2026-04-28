@@ -389,6 +389,18 @@ and marks older rows inactive. Alpaca advice/trade scans and MarketStack advice
 load active tuned parameters automatically; if none exist, they print that
 defaults are being used.
 
+Use walk-forward validation to tune on earlier candles and validate on later
+unseen candles:
+
+```powershell
+python -m app.main validate-symbol --symbol BB --timeframe 1Day --lookback 365 --train-ratio 0.7 --trials 100
+```
+
+Validation saves train and validation returns, drawdowns, win rates, validation
+trade count, and an overfit warning when the validation result looks weak.
+Trading and advice commands prefer active parameters with acceptable validation
+results when available.
+
 If Optuna is missing, install dependencies:
 
 ```powershell

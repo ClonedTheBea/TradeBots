@@ -1,7 +1,15 @@
 import unittest
 
 from data.models import Candle
-from strategy.tuner import TuningConfig, tune_strategy_for_symbol, tuning_objective
+from strategy.tuner import (
+    TuningConfig,
+    generate_overfit_warning,
+    split_train_validation,
+    tune_strategy_for_symbol,
+    tuning_objective,
+    validate_strategy_for_symbol,
+    validation_result_to_storage_params,
+)
 
 
 class FixedTrial:
@@ -103,6 +111,50 @@ class TunerTests(unittest.TestCase):
         self.assertIn("sma_short", result.params)
         self.assertIsInstance(result.score, float)
         self.assertEqual(result.backtest.symbol, "BB")
+
+    def test_chronological_train_validation_split(self):
+        source = candles(10)
+
+        train, validation = split_train_validation(source, 0.7)
+
+        self.assertEqual(len(train), 7)
+        self.assertEqual(len(validation), 3)
+        self.assertEqual(train[-1].timestamp, source[6].timestamp)
+        self.assertEqual(validation[0].timestamp, source[7].timestamp)
+
+    def test_validation_metrics_calculation(self):
+        result = validate_strategy_for_symbol(
+            candles(),
+            "BB",
+            0.7,
+            TuningConfig(trials=2, minimum_trade_count=0),
+            optuna_module=FakeOptuna(),
+        )
+
+        payload = validation_result_to_storage_params(result, "BB", "1Day", 365)
+
+        self.assertIn("validation_return_pct", payload)
+        self.assertIn("validation_drawdown_pct", payload)
+        self.assertIn("validation_trade_count", payload)
+        self.assertEqual(payload["symbol"], "BB")
+
+    def test_overfit_warning_generation(self):
+        train = SimpleBacktest(total_return_pct=20.0, max_drawdown_pct=5.0, win_rate=0.8, trade_count=8)
+        validation = SimpleBacktest(total_return_pct=-5.0, max_drawdown_pct=30.0, win_rate=0.2, trade_count=1)
+
+        warning = generate_overfit_warning(train, validation, minimum_validation_trades=3)
+
+        self.assertIn("train positive but validation negative", warning)
+        self.assertIn("validation trade count too low", warning)
+        self.assertIn("validation drawdown too high", warning)
+
+
+class SimpleBacktest:
+    def __init__(self, total_return_pct, max_drawdown_pct, win_rate, trade_count):
+        self.total_return_pct = total_return_pct
+        self.max_drawdown_pct = max_drawdown_pct
+        self.win_rate = win_rate
+        self.trades = tuple(object() for _ in range(trade_count))
 
 
 if __name__ == "__main__":

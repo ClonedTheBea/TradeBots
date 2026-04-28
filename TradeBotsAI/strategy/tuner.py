@@ -24,6 +24,15 @@ class TuningResult:
     backtest: BacktestResult
 
 
+@dataclass(frozen=True)
+class WalkForwardValidationResult:
+    params: dict[str, int | float]
+    score: float
+    train_backtest: BacktestResult
+    validation_backtest: BacktestResult
+    overfit_warning: str
+
+
 def tune_strategy_for_symbol(
     candles: list[Candle],
     symbol: str,
@@ -38,6 +47,61 @@ def tune_strategy_for_symbol(
     best_params = dict(study.best_params)
     best_backtest = run_tuned_backtest(candles, best_params, symbol, config)
     return TuningResult(best_params, study.best_value, best_backtest)
+
+
+def validate_strategy_for_symbol(
+    candles: list[Candle],
+    symbol: str,
+    train_ratio: float,
+    config: TuningConfig,
+    optuna_module: Any | None = None,
+) -> WalkForwardValidationResult:
+    train_candles, validation_candles = split_train_validation(candles, train_ratio)
+    tuning = tune_strategy_for_symbol(train_candles, symbol, config, optuna_module=optuna_module)
+    validation_backtest = run_tuned_backtest(validation_candles, tuning.params, symbol, config)
+    warning = generate_overfit_warning(
+        train_backtest=tuning.backtest,
+        validation_backtest=validation_backtest,
+        minimum_validation_trades=config.minimum_trade_count,
+    )
+    return WalkForwardValidationResult(
+        params=tuning.params,
+        score=tuning.score,
+        train_backtest=tuning.backtest,
+        validation_backtest=validation_backtest,
+        overfit_warning=warning,
+    )
+
+
+def split_train_validation(
+    candles: list[Candle],
+    train_ratio: float,
+) -> tuple[list[Candle], list[Candle]]:
+    if not 0 < train_ratio < 1:
+        raise ValueError("train_ratio must be between 0 and 1")
+    if len(candles) < 2:
+        raise ValueError("At least two candles are required for validation")
+    split_index = int(len(candles) * train_ratio)
+    split_index = min(max(split_index, 1), len(candles) - 1)
+    return candles[:split_index], candles[split_index:]
+
+
+def generate_overfit_warning(
+    train_backtest: BacktestResult,
+    validation_backtest: BacktestResult,
+    minimum_validation_trades: int = 3,
+    max_validation_drawdown_pct: float = 25.0,
+) -> str:
+    warnings: list[str] = []
+    if train_backtest.total_return_pct > 0 and validation_backtest.total_return_pct < 0:
+        warnings.append("train positive but validation negative")
+    if validation_backtest.total_return_pct < (train_backtest.total_return_pct * 0.35):
+        warnings.append("validation return much worse than train return")
+    if len(validation_backtest.trades) < minimum_validation_trades:
+        warnings.append("validation trade count too low")
+    if validation_backtest.max_drawdown_pct > max_validation_drawdown_pct:
+        warnings.append("validation drawdown too high")
+    return "; ".join(warnings)
 
 
 def tuning_objective(
@@ -136,6 +200,33 @@ def tuning_result_to_storage_params(
         "trade_count": len(result.backtest.trades),
         "score": result.score,
     }
+
+
+def validation_result_to_storage_params(
+    result: WalkForwardValidationResult,
+    symbol: str,
+    timeframe: str,
+    lookback_days: int,
+) -> dict[str, int | float | str]:
+    payload = tuning_result_to_storage_params(
+        TuningResult(result.params, result.score, result.train_backtest),
+        symbol,
+        timeframe,
+        lookback_days,
+    )
+    payload.update(
+        {
+            "train_return_pct": result.train_backtest.total_return_pct,
+            "validation_return_pct": result.validation_backtest.total_return_pct,
+            "train_drawdown_pct": result.train_backtest.max_drawdown_pct,
+            "validation_drawdown_pct": result.validation_backtest.max_drawdown_pct,
+            "train_win_rate_pct": result.train_backtest.win_rate * 100,
+            "validation_win_rate_pct": result.validation_backtest.win_rate * 100,
+            "validation_trade_count": len(result.validation_backtest.trades),
+            "overfit_warning": result.overfit_warning,
+        }
+    )
+    return payload
 
 
 def _load_optuna() -> Any:

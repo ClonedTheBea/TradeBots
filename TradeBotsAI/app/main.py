@@ -247,6 +247,18 @@ def parse_args() -> argparse.Namespace:
     show_params_parser.add_argument("--timeframe", default="1Day")
     show_params_parser.add_argument("--db", default="tradebots_ai.sqlite")
 
+    validate_parser = subparsers.add_parser(
+        "validate-symbol",
+        help="Walk-forward validate tuned strategy parameters for one symbol",
+    )
+    validate_parser.add_argument("--symbol", required=True)
+    validate_parser.add_argument("--timeframe", default="1Day")
+    validate_parser.add_argument("--lookback", type=int, default=365)
+    validate_parser.add_argument("--train-ratio", type=float, default=0.7)
+    validate_parser.add_argument("--trials", type=int, default=100)
+    validate_parser.add_argument("--minimum-trades", type=int, default=3)
+    validate_parser.add_argument("--db", default="tradebots_ai.sqlite")
+
     for command_name, help_text in (
         ("marketstack-fetch", "Fetch MarketStack OHLCV candles and save them locally"),
         ("marketstack-advice", "Fetch MarketStack candles and run advisory analysis"),
@@ -445,6 +457,16 @@ def main() -> int:
         )
     if args.command == "show-params":
         return run_show_params(args.symbol, args.timeframe, args.db)
+    if args.command == "validate-symbol":
+        return run_validate_symbol(
+            args.symbol,
+            args.timeframe,
+            args.lookback,
+            args.train_ratio,
+            args.trials,
+            args.minimum_trades,
+            args.db,
+        )
     if args.command == "marketstack-fetch":
         return run_marketstack_fetch(
             args.symbol,
@@ -1021,9 +1043,78 @@ def run_show_params(symbol: str, timeframe: str, db_path: str) -> int:
         "win_rate_pct",
         "trade_count",
         "score",
+        "train_return_pct",
+        "validation_return_pct",
+        "train_drawdown_pct",
+        "validation_drawdown_pct",
+        "train_win_rate_pct",
+        "validation_win_rate_pct",
+        "validation_trade_count",
+        "overfit_warning",
         "created_at",
     ):
         print(f"{key}: {params[key]}")
+    return 0
+
+
+def run_validate_symbol(
+    symbol: str,
+    timeframe: str,
+    lookback: int,
+    train_ratio: float,
+    trials: int,
+    minimum_trades: int,
+    db_path: str,
+) -> int:
+    from broker.alpaca_client import AlpacaPaperClient
+    from strategy.tuner import (
+        TuningConfig,
+        split_train_validation,
+        validate_strategy_for_symbol,
+        validation_result_to_storage_params,
+    )
+
+    normalized_symbol = symbol.upper()
+    try:
+        client = AlpacaPaperClient.from_env()
+        candles = _with_api_retries(
+            lambda: client.get_bars(normalized_symbol, timeframe=timeframe, lookback=lookback),
+            f"fetch bars for {normalized_symbol}",
+        )
+        train_candles, validation_candles = split_train_validation(candles, train_ratio)
+        result = validate_strategy_for_symbol(
+            candles,
+            normalized_symbol,
+            train_ratio,
+            TuningConfig(trials=trials, minimum_trade_count=minimum_trades),
+        )
+    except (RuntimeError, ValueError) as exc:
+        print(exc)
+        return 1
+
+    stored = validation_result_to_storage_params(result, normalized_symbol, timeframe, lookback)
+    with SQLiteStore(db_path) as store:
+        store.initialize()
+        row_id = store.save_strategy_parameters(stored, active=True)
+
+    print(f"Walk-forward validation for {normalized_symbol} ({timeframe})")
+    print(f"Candles: train={len(train_candles)} validation={len(validation_candles)}")
+    print(
+        "Train: "
+        f"return={result.train_backtest.total_return_pct:.2f}% "
+        f"drawdown={result.train_backtest.max_drawdown_pct:.2f}% "
+        f"win_rate={result.train_backtest.win_rate * 100:.2f}% "
+        f"trades={len(result.train_backtest.trades)}"
+    )
+    print(
+        "Validation: "
+        f"return={result.validation_backtest.total_return_pct:.2f}% "
+        f"drawdown={result.validation_backtest.max_drawdown_pct:.2f}% "
+        f"win_rate={result.validation_backtest.win_rate * 100:.2f}% "
+        f"trades={len(result.validation_backtest.trades)}"
+    )
+    print(f"Overfit warning: {result.overfit_warning or 'none'}")
+    print(f"Saved active validated params #{row_id}.")
     return 0
 
 
