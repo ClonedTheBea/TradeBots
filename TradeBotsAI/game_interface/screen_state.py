@@ -48,10 +48,7 @@ def parse_game_date(text: str) -> str | None:
 
 
 def parse_screen_state(ocr_text: str) -> ScreenState:
-    price = _parse_labeled_money(
-        ocr_text,
-        ("price", "current price", "stock price"),
-    ) or _parse_unlabeled_price_money(ocr_text)
+    price = _parse_price(ocr_text)
     return ScreenState(
         raw_text=ocr_text,
         game_date=parse_game_date(ocr_text),
@@ -63,6 +60,22 @@ def parse_screen_state(ocr_text: str) -> ScreenState:
         selected_trade_action=_parse_selected_trade_action(ocr_text),
         slider_state=_parse_slider_state(ocr_text),
     )
+
+
+def _parse_price(text: str) -> float | None:
+    red_price = _parse_price_from_money_percent_line(text)
+    if red_price is not None:
+        return red_price
+
+    for label in ("price", "current price", "stock price"):
+        segment = _parse_label_segment(text, label)
+        if segment is None:
+            continue
+        money = parse_money(segment)
+        if money is not None:
+            return money
+
+    return _parse_unlabeled_price_money(text)
 
 
 def _parse_labeled_money(text: str, labels: tuple[str, ...]) -> float | None:
@@ -107,6 +120,10 @@ def _parse_label_segment(text: str, label: str) -> str | None:
 
 
 def _parse_price_gain_percent(text: str) -> float | None:
+    red_percent = _parse_percent_from_money_percent_line(text)
+    if red_percent is not None:
+        return red_percent
+
     for line in text.splitlines():
         if "price" not in line.lower():
             continue
@@ -123,6 +140,34 @@ def _parse_price_gain_percent(text: str) -> float | None:
             percent = parse_percent(line)
             if percent is not None:
                 return percent
+    return None
+
+
+def _parse_price_from_money_percent_line(text: str) -> float | None:
+    for line in text.splitlines():
+        lower = line.lower()
+        if "fee" in lower or "holding" in lower:
+            continue
+        money_percent_match = re.search(
+            r"[S$]\s*(-?\d[\d,]*(?:\.\d+)?)\s*\(\s*-?\d[\d,]*(?:\.\d+)?\s*%\s*\)",
+            line,
+        )
+        if money_percent_match:
+            return float(money_percent_match.group(1).replace(",", ""))
+    return None
+
+
+def _parse_percent_from_money_percent_line(text: str) -> float | None:
+    for line in text.splitlines():
+        lower = line.lower()
+        if "fee" in lower or "holding" in lower:
+            continue
+        money_percent_match = re.search(
+            r"[S$]\s*-?\d[\d,]*(?:\.\d+)?\s*\(\s*(-?\d[\d,]*(?:\.\d+)?)\s*%\s*\)",
+            line,
+        )
+        if money_percent_match:
+            return float(money_percent_match.group(1).replace(",", ""))
     return None
 
 

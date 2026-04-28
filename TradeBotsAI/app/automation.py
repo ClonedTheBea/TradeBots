@@ -39,7 +39,7 @@ from game_interface.screen_state import ScreenState, parse_screen_state
 from strategy.signals import SignalConfig, SignalEngine
 
 
-HOLDINGS_EPSILON = 0.0001
+HOLDINGS_EPSILON = 1.0
 
 
 @dataclass(frozen=True)
@@ -291,9 +291,13 @@ def execute_trade(
     process_trade_image: Any | None = None,
 ) -> TradeExecutionResult:
     normalized_action = action.upper()
-    holdings = screen_state.holdings or 0.0
+    parsed_holdings = screen_state.holdings or 0.0
+    holdings = 0.0 if abs(parsed_holdings) < HOLDINGS_EPSILON else parsed_holdings
     automation_config = config or load_step_config()
-    print(f"Trade decision: action={normalized_action}, parsed_holdings={holdings:g}")
+    print(
+        f"Trade decision: action={normalized_action}, "
+        f"parsed_holdings={parsed_holdings:g}, effective_holdings={holdings:g}"
+    )
 
     if normalized_action == "HOLD":
         return _skipped_trade(normalized_action, "HOLD signal: no trade.")

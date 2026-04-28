@@ -107,6 +107,18 @@ class AutomationTests(unittest.TestCase):
         self.assertFalse(result.executed)
         self.assertEqual(result.skipped_reason, "BUY skipped: already holding stock.")
 
+    def test_buy_with_small_ocr_holdings_noise_executes(self):
+        result = execute_trade(
+            "BUY",
+            screen_state(holdings=0.6),
+            dry_run=False,
+            pyautogui_module=FakePyAutoGui(),
+            config=fake_config(),
+            process_trade_image=FakeImage((0, 220, 0)),
+        )
+
+        self.assertTrue(result.executed)
+
     def test_sell_with_holdings_executes(self):
         result = execute_trade(
             "SELL",

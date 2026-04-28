@@ -72,6 +72,21 @@ class ScreenStateParserTests(unittest.TestCase):
 
         self.assertEqual(state.holdings, 339.71)
 
+    def test_parse_screen_state_prefers_red_price_over_corrupt_price_line(self):
+        text = """
+        [top-price-area]
+        Price: =i(ai(itstiCh: ts dking: $8.08
+        [top-red-price]
+        $48.61(-1.43%) $432.41(108%)
+        [top-red-hud]
+        . $40.01(-1.43%) $432.41(108%)
+        """
+
+        state = parse_screen_state(text)
+
+        self.assertEqual(state.price, 48.61)
+        self.assertEqual(state.gain_percent, -1.43)
+
     def test_parse_screen_state_does_not_treat_cash_as_price(self):
         state = parse_screen_state("May9Yr1 Price: =~ Cash: $495.09 Holdings: $0.00")
 
