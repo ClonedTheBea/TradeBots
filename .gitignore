@@ -9,3 +9,4 @@ exports/
 uploads/
 *.sqlite
 *.sqlite3
+debug_screenshots/

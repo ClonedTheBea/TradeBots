@@ -64,6 +64,22 @@ class CaptureParserTests(unittest.TestCase):
         self.assertEqual(snapshot.timestamp, "May 9 Yr 1")
         self.assertEqual(snapshot.price, 34.44)
 
+    def test_parse_tradebots_hud_accepts_compacted_game_date_from_ocr(self):
+        snapshot = parse_tradebots_hud("May9Yr1 Price: $34.44 Cash: $495.09")
+
+        self.assertEqual(snapshot.timestamp, "May 9 Yr 1")
+        self.assertEqual(snapshot.price, 34.44)
+
+    def test_parse_tradebots_hud_does_not_use_transaction_fee_as_price(self):
+        with self.assertRaisesRegex(ValueError, "current price"):
+            parse_tradebots_hud("May9Yr1 Price: =~\nTransaction Fee @ 2%: $6.79")
+
+    def test_parse_tradebots_hud_accepts_red_mask_price_line(self):
+        snapshot = parse_tradebots_hud("May9Yr1 Price: =~ Cash: $495.09\n$34.44 (-0.7%)")
+
+        self.assertEqual(snapshot.timestamp, "May 9 Yr 1")
+        self.assertEqual(snapshot.price, 34.44)
+
 
 if __name__ == "__main__":
     unittest.main()

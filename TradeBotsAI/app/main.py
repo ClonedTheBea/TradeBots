@@ -37,6 +37,63 @@ def parse_args() -> argparse.Namespace:
         default="GAME",
         help="Optional symbol/name for the captured scenario",
     )
+    watch_parser = subparsers.add_parser(
+        "watch-screen",
+        help="Wait for F8, capture the Trade Bots HUD, append price, and run advisory",
+    )
+    watch_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Save debug screenshots and print raw OCR/parsed fields",
+    )
+    watch_parser.add_argument(
+        "--csv",
+        default=str(DEFAULT_LIVE_CSV),
+        help="Close-only CSV path to append captured prices",
+    )
+    watch_parser.add_argument(
+        "--symbol",
+        default="GAME",
+        help="Optional symbol/name for the watched scenario",
+    )
+    watch_parser.add_argument(
+        "--hotkey",
+        default="f8",
+        help="Hotkey to capture the current screen",
+    )
+    auto_step_parser = subparsers.add_parser(
+        "auto-step",
+        help="Repeatedly press STEP, OCR the HUD, append price, and run advisory",
+    )
+    auto_step_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Save debug screenshots and print raw OCR/parsed fields",
+    )
+    auto_step_parser.add_argument(
+        "--csv",
+        default=str(DEFAULT_LIVE_CSV),
+        help="Close-only CSV path to append captured prices",
+    )
+    auto_step_parser.add_argument(
+        "--symbol",
+        default="GAME",
+        help="Optional symbol/name for the auto-step scenario",
+    )
+    auto_step_parser.add_argument(
+        "--max-steps",
+        type=int,
+        help="Stop after this many STEP clicks",
+    )
+    auto_step_parser.add_argument(
+        "--allow-duplicates",
+        action="store_true",
+        help="Append even when the parsed game date matches the last CSV row",
+    )
+    subparsers.add_parser(
+        "mouse-pos",
+        help="Print the current mouse position every 0.5 seconds for STEP calibration",
+    )
 
     parser.add_argument("--csv", help="Path to OHLCV or close-only candle CSV data")
     parser.add_argument(
@@ -89,9 +146,37 @@ def main() -> int:
         except (RuntimeError, ValueError) as exc:
             print(exc)
             return 1
+    if args.command == "watch-screen":
+        try:
+            return run_watch_screen(args.csv, args.symbol, args.hotkey, args.debug)
+        except RuntimeError as exc:
+            print(exc)
+            return 1
+    if args.command == "auto-step":
+        from app.automation import run_auto_step
+
+        try:
+            return run_auto_step(
+                csv_path=args.csv,
+                symbol=args.symbol,
+                max_steps=args.max_steps,
+                allow_duplicates=args.allow_duplicates,
+                debug=args.debug,
+            )
+        except (RuntimeError, ValueError) as exc:
+            print(exc)
+            return 1
+    if args.command == "mouse-pos":
+        from app.automation import run_mouse_position_printer
+
+        try:
+            return run_mouse_position_printer()
+        except RuntimeError as exc:
+            print(exc)
+            return 1
 
     if not args.csv:
-        print("CSV path is required unless using capture-once.")
+        print("CSV path is required unless using capture-once, watch-screen, auto-step, or mouse-pos.")
         return 1
 
     csv_path = Path(args.csv)
@@ -172,6 +257,62 @@ def main() -> int:
         f"max_drawdown={result.max_drawdown_pct:.2f}%"
     )
     print(f"Stored results in: {Path(args.db).resolve()}")
+    return 0
+
+
+def run_watch_screen(csv_path: str, symbol: str, hotkey: str, debug: bool) -> int:
+    from app.recorder import append_close_price
+    from game_interface.hotkey_listener import listen_for_hotkey
+    from game_interface.ocr_reader import read_ocr_text
+    from game_interface.screen_capture import capture_screen
+    from game_interface.screen_state import parse_screen_state
+
+    signal_engine = SignalEngine(SignalConfig())
+
+    def capture_and_advise() -> None:
+        try:
+            image = capture_screen(debug=debug)
+            raw_text = read_ocr_text(image, debug=debug)
+            state = parse_screen_state(raw_text)
+            if debug:
+                print("Raw OCR text:")
+                print(raw_text)
+                print("Parsed fields:")
+                print(f"  date={state.game_date}")
+                print(f"  price={state.price}")
+                print(f"  gain_percent={state.gain_percent}")
+                print(f"  cash={state.cash}")
+                print(f"  holdings={state.holdings}")
+
+            if state.price is None:
+                print("Could not parse current price from OCR text")
+                return
+
+            timestamp = state.game_date or state.captured_at
+            append_close_price(csv_path, timestamp, state.price)
+            print(f"Captured {timestamp}: close={state.price:.4f}")
+
+            try:
+                candles = load_candles_from_csv(csv_path)
+            except ValueError as exc:
+                message = str(exc)
+                if "At least 35 candles" in message:
+                    print(f"Need more captured prices before advisory is available. {message}")
+                    return
+                raise
+
+            signal = signal_engine.latest_signal(candles, symbol=symbol)
+            print(f"Recommendation: {signal.action}")
+            print(f"Confidence: {signal.confidence:.2f}")
+            print(f"Score: {signal.score:.2f}")
+            print(f"Reasons: {signal.reason}")
+        except Exception as exc:
+            print(f"Capture failed: {exc}")
+
+    try:
+        listen_for_hotkey(capture_and_advise, hotkey=hotkey)
+    except KeyboardInterrupt:
+        print("Stopped watch-screen mode.")
     return 0
 
 

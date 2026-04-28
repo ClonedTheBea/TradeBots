@@ -40,7 +40,11 @@ def run_capture_once(
         image.save(debug_path)
         print(f"Saved debug screenshot to: {debug_path.resolve()}")
 
-    raw_text = ocr_image(image)
+    raw_text = ocr_tradebots_screen(
+        image,
+        debug=debug,
+        debug_base_path=debug_screenshot_path,
+    )
     if debug:
         print("Raw OCR text:")
         print(raw_text)
@@ -100,6 +104,14 @@ def capture_full_screen() -> Any:
 
 
 def ocr_image(image: Any) -> str:
+    return ocr_tradebots_screen(image)
+
+
+def ocr_tradebots_screen(
+    image: Any,
+    debug: bool = False,
+    debug_base_path: str | Path = DEFAULT_DEBUG_SCREENSHOT,
+) -> str:
     try:
         import pytesseract
     except ImportError as exc:
@@ -108,7 +120,42 @@ def ocr_image(image: Any) -> str:
             "`python -m pip install -r requirements.txt`. You also need the Tesseract OCR app installed."
         ) from exc
 
-    return pytesseract.image_to_string(image)
+    texts = [
+        ("full", pytesseract.image_to_string(_prepare_ocr_image(image), config="--psm 6")),
+    ]
+
+    for name, crop in _tradebots_ocr_regions(image).items():
+        prepared = _prepare_ocr_image(crop)
+        if debug:
+            _save_debug_crop(prepared, debug_base_path, name)
+        texts.append(
+            (
+                name,
+                pytesseract.image_to_string(prepared, config="--psm 6"),
+            )
+        )
+        texts.append(
+            (
+                f"{name}-line",
+                pytesseract.image_to_string(prepared, config="--psm 7"),
+            )
+        )
+
+    for name, crop in _tradebots_red_price_regions(image).items():
+        prepared = _prepare_red_text_image(crop)
+        if debug:
+            _save_debug_crop(prepared, debug_base_path, name)
+        texts.append(
+            (
+                name,
+                pytesseract.image_to_string(
+                    prepared,
+                    config="--psm 7 -c tessedit_char_whitelist=Price:$0123456789.,-()% ",
+                ),
+            )
+        )
+
+    return "\n".join(f"[{name}]\n{text.strip()}" for name, text in texts if text.strip())
 
 
 def parse_tradebots_hud(raw_text: str) -> HudSnapshot:
@@ -119,7 +166,7 @@ def parse_tradebots_hud(raw_text: str) -> HudSnapshot:
     price = _parse_labeled_number(
         raw_text,
         labels=("current price", "stock price", "asset price", "price"),
-    ) or _parse_trade_panel_price(raw_text)
+    ) or _parse_trade_panel_price(raw_text) or _parse_red_price_mask_value(raw_text)
     cash = _parse_labeled_number(
         raw_text,
         labels=("cash", "balance", "money"),
@@ -162,12 +209,15 @@ def _parse_date_like_text(raw_text: str) -> str | None:
         return iso_match.group(0)
 
     game_date_match = re.search(
-        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+"
-        r"\d{1,2}\s+Yr\s+\d+\b",
+        r"\b((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*)\s*"
+        r"(\d{1,2})\s*Yr\s*(\d+)\b",
         raw_text,
         re.I,
     )
-    return game_date_match.group(0) if game_date_match else None
+    if game_date_match:
+        month, day, year = game_date_match.groups()
+        return f"{month.title()} {day} Yr {year}"
+    return None
 
 
 def _parse_labeled_number(raw_text: str, labels: tuple[str, ...]) -> float | None:
@@ -182,10 +232,87 @@ def _parse_labeled_number(raw_text: str, labels: tuple[str, ...]) -> float | Non
 def _parse_trade_panel_price(raw_text: str) -> float | None:
     patterns = (
         r"\bstock\s*@\s*[S$]?\s*(-?\d[\d,]*(?:\.\d+)?)",
-        r"@\s*[S$]\s*(-?\d[\d,]*(?:\.\d+)?)",
+        r"\b(?:shares|holding|holdings)\s*@\s*[S$]?\s*(-?\d[\d,]*(?:\.\d+)?)",
     )
     for pattern in patterns:
         match = re.search(pattern, raw_text, re.I)
         if match:
             return float(match.group(1).replace(",", ""))
     return None
+
+
+def _parse_red_price_mask_value(raw_text: str) -> float | None:
+    for line in raw_text.splitlines():
+        if "fee" in line.lower() or "cash" in line.lower() or "holding" in line.lower():
+            continue
+        money_values = re.findall(r"[S$]\s*(-?\d[\d,]*(?:\.\d+)?)", line)
+        if money_values:
+            return float(money_values[0].replace(",", ""))
+    return None
+
+
+def _tradebots_ocr_regions(image: Any) -> dict[str, Any]:
+    width, height = image.size
+    return {
+        "top-hud": image.crop((0, 0, width, max(1, int(height * 0.09)))),
+        "top-price-area": image.crop(
+            (
+                int(width * 0.10),
+                0,
+                int(width * 0.42),
+                max(1, int(height * 0.09)),
+            )
+        ),
+        "bottom-trade-panel": image.crop((0, int(height * 0.88), width, height)),
+        "bottom-left-trade-panel": image.crop((0, int(height * 0.88), int(width * 0.58), height)),
+    }
+
+
+def _tradebots_red_price_regions(image: Any) -> dict[str, Any]:
+    width, height = image.size
+    return {
+        "top-red-price": image.crop(
+            (
+                int(width * 0.12),
+                0,
+                int(width * 0.48),
+                max(1, int(height * 0.09)),
+            )
+        ),
+        "top-red-hud": image.crop((0, 0, width, max(1, int(height * 0.09)))),
+    }
+
+
+def _prepare_ocr_image(image: Any) -> Any:
+    from PIL import ImageEnhance, ImageOps
+
+    scale = 3
+    resized = image.resize((image.width * scale, image.height * scale))
+    grayscale = ImageOps.grayscale(resized)
+    high_contrast = ImageEnhance.Contrast(grayscale).enhance(2.5)
+    return high_contrast.point(lambda pixel: 255 if pixel > 115 else 0)
+
+
+def _prepare_red_text_image(image: Any) -> Any:
+    from PIL import Image
+
+    scale = 5
+    resized = image.convert("RGB").resize((image.width * scale, image.height * scale))
+    output = Image.new("L", resized.size, 255)
+    source = resized.load()
+    target = output.load()
+
+    for y in range(resized.height):
+        for x in range(resized.width):
+            red, green, blue = source[x, y]
+            is_red_text = red > 120 and red > (green * 1.35) and red > (blue * 1.35)
+            if is_red_text:
+                target[x, y] = 0
+
+    return output
+
+
+def _save_debug_crop(image: Any, debug_base_path: str | Path, name: str) -> None:
+    base_path = Path(debug_base_path)
+    path = base_path.with_name(f"{base_path.stem}_{name}{base_path.suffix}")
+    image.save(path)
