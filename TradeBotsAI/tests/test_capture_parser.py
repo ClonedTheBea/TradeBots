@@ -46,6 +46,24 @@ class CaptureParserTests(unittest.TestCase):
         self.assertEqual(snapshot.timestamp, "2025-04-12")
         self.assertEqual(snapshot.price, 101.25)
 
+    def test_parse_tradebots_hud_accepts_trade_bots_top_bar(self):
+        raw_text = "May 9 Yr 1   Price: $34.44 (-0.7%)   Cash: $495.00 (100%)   Holdings: $0.00"
+
+        snapshot = parse_tradebots_hud(raw_text)
+
+        self.assertEqual(snapshot.timestamp, "May 9 Yr 1")
+        self.assertEqual(snapshot.price, 34.44)
+        self.assertEqual(snapshot.cash, 495.0)
+        self.assertEqual(snapshot.holdings, 0.0)
+
+    def test_parse_tradebots_hud_falls_back_to_bottom_trade_panel_price(self):
+        raw_text = "May 9 Yr 1\n$39.71 of stock @ $34.44\nTransaction Fee @ 2%: $6.79"
+
+        snapshot = parse_tradebots_hud(raw_text)
+
+        self.assertEqual(snapshot.timestamp, "May 9 Yr 1")
+        self.assertEqual(snapshot.price, 34.44)
+
 
 if __name__ == "__main__":
     unittest.main()

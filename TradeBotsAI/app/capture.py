@@ -119,7 +119,7 @@ def parse_tradebots_hud(raw_text: str) -> HudSnapshot:
     price = _parse_labeled_number(
         raw_text,
         labels=("current price", "stock price", "asset price", "price"),
-    )
+    ) or _parse_trade_panel_price(raw_text)
     cash = _parse_labeled_number(
         raw_text,
         labels=("cash", "balance", "money"),
@@ -157,13 +157,34 @@ def _parse_labeled_text(raw_text: str, labels: tuple[str, ...]) -> str | None:
 
 
 def _parse_date_like_text(raw_text: str) -> str | None:
-    match = re.search(r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b", raw_text)
-    return match.group(0) if match else None
+    iso_match = re.search(r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b", raw_text)
+    if iso_match:
+        return iso_match.group(0)
+
+    game_date_match = re.search(
+        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+"
+        r"\d{1,2}\s+Yr\s+\d+\b",
+        raw_text,
+        re.I,
+    )
+    return game_date_match.group(0) if game_date_match else None
 
 
 def _parse_labeled_number(raw_text: str, labels: tuple[str, ...]) -> float | None:
     for label in labels:
-        pattern = rf"\b{re.escape(label)}\b\s*[:#-]?\s*\$?\s*(-?\d[\d,]*(?:\.\d+)?)"
+        pattern = rf"\b{re.escape(label)}\b\s*[:#-]?\s*[S$]?\s*(-?\d[\d,]*(?:\.\d+)?)"
+        match = re.search(pattern, raw_text, re.I)
+        if match:
+            return float(match.group(1).replace(",", ""))
+    return None
+
+
+def _parse_trade_panel_price(raw_text: str) -> float | None:
+    patterns = (
+        r"\bstock\s*@\s*[S$]?\s*(-?\d[\d,]*(?:\.\d+)?)",
+        r"@\s*[S$]\s*(-?\d[\d,]*(?:\.\d+)?)",
+    )
+    for pattern in patterns:
         match = re.search(pattern, raw_text, re.I)
         if match:
             return float(match.group(1).replace(",", ""))
