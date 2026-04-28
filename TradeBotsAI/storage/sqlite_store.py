@@ -84,6 +84,26 @@ class SQLiteStore:
                 max_drawdown_pct REAL NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS alpaca_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id TEXT,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                qty REAL NOT NULL,
+                status TEXT,
+                raw_json TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS alpaca_positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                qty REAL NOT NULL,
+                market_value REAL,
+                source TEXT NOT NULL DEFAULT 'alpaca_paper',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
         self._ensure_column("signals", "session_id", "TEXT")
@@ -98,6 +118,46 @@ class SQLiteStore:
             "REAL NOT NULL DEFAULT 0",
         )
         conn.commit()
+
+    def save_alpaca_order(self, order: Any) -> None:
+        self._conn().execute(
+            """
+            INSERT INTO alpaca_orders (order_id, symbol, side, qty, status, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                getattr(order, "order_id", None),
+                getattr(order, "symbol", ""),
+                getattr(order, "side", ""),
+                getattr(order, "qty", 0),
+                getattr(order, "status", None),
+                getattr(order, "raw", str(order)),
+            ),
+        )
+        self._conn().commit()
+
+    def save_alpaca_position(self, position: Any, symbol: str | None = None) -> None:
+        if position is None:
+            self._conn().execute(
+                """
+                INSERT INTO alpaca_positions (symbol, qty, market_value)
+                VALUES (?, ?, ?)
+                """,
+                (symbol or "", 0.0, None),
+            )
+        else:
+            self._conn().execute(
+                """
+                INSERT INTO alpaca_positions (symbol, qty, market_value)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    getattr(position, "symbol", symbol or ""),
+                    getattr(position, "qty", 0),
+                    getattr(position, "market_value", None),
+                ),
+            )
+        self._conn().commit()
 
     def save_signal(self, signal: Signal, session_id: str | None = None) -> None:
         self._conn().execute(

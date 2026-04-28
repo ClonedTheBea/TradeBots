@@ -259,6 +259,48 @@ Restart PowerShell after changing PATH, then check:
 tesseract --version
 ```
 
+## Alpaca Paper Trading
+
+Alpaca support is paper-only. Live trading is intentionally unsupported.
+
+Install dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+Create `.env` in the `TradeBotsAI` folder:
+
+```text
+ALPACA_API_KEY=your_key
+ALPACA_SECRET_KEY=your_secret
+ALPACA_PAPER=true
+```
+
+If `ALPACA_PAPER` is not exactly `true`, Alpaca commands refuse to run.
+
+Fetch market bars and get advice:
+
+```powershell
+python -m app.main alpaca-advice --symbol AAPL --timeframe 1Day --lookback 180
+```
+
+Submit a paper order only when the advisory signal is BUY or SELL and position
+rules allow it:
+
+```powershell
+python -m app.main alpaca-paper-trade --symbol AAPL --qty 1 --confirm-paper
+```
+
+Safety rules:
+- Uses `TradingClient(..., paper=True)` only.
+- No live trading mode.
+- No shorting.
+- SELL only runs when a paper position exists.
+- BUY only runs when no paper position exists.
+- Orders require `--confirm-paper`.
+- Signals, orders, and positions are logged to SQLite.
+
 ## Project Layout
 
 - `app/`: command line entry point and orchestration

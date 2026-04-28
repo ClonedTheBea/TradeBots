@@ -155,6 +155,25 @@ def parse_args() -> argparse.Namespace:
         ("test-step-click", "Click the saved STEP coordinate once"),
     ):
         subparsers.add_parser(command_name, help=help_text)
+    alpaca_advice_parser = subparsers.add_parser(
+        "alpaca-advice",
+        help="Fetch Alpaca paper market data and run advisory analysis",
+    )
+    alpaca_advice_parser.add_argument("--symbol", required=True)
+    alpaca_advice_parser.add_argument("--timeframe", default="1Day")
+    alpaca_advice_parser.add_argument("--lookback", type=int, default=180)
+    alpaca_advice_parser.add_argument("--db", default="tradebots_ai.sqlite")
+
+    alpaca_trade_parser = subparsers.add_parser(
+        "alpaca-paper-trade",
+        help="Submit a confirmed Alpaca paper order from the advisory signal",
+    )
+    alpaca_trade_parser.add_argument("--symbol", required=True)
+    alpaca_trade_parser.add_argument("--qty", type=float, required=True)
+    alpaca_trade_parser.add_argument("--timeframe", default="1Day")
+    alpaca_trade_parser.add_argument("--lookback", type=int, default=180)
+    alpaca_trade_parser.add_argument("--confirm-paper", action="store_true")
+    alpaca_trade_parser.add_argument("--db", default="tradebots_ai.sqlite")
 
     parser.add_argument("--csv", help="Path to OHLCV or close-only candle CSV data")
     parser.add_argument(
@@ -286,6 +305,17 @@ def main() -> int:
         except RuntimeError as exc:
             print(exc)
             return 1
+    if args.command == "alpaca-advice":
+        return run_alpaca_advice(args.symbol, args.timeframe, args.lookback, args.db)
+    if args.command == "alpaca-paper-trade":
+        return run_alpaca_paper_trade(
+            args.symbol,
+            args.qty,
+            args.timeframe,
+            args.lookback,
+            args.confirm_paper,
+            args.db,
+        )
 
     if not args.csv:
         print("CSV path is required unless using capture-once, watch-screen, auto-step, or mouse-pos.")
@@ -369,6 +399,92 @@ def main() -> int:
         f"max_drawdown={result.max_drawdown_pct:.2f}%"
     )
     print(f"Stored results in: {Path(args.db).resolve()}")
+    return 0
+
+
+def run_alpaca_advice(symbol: str, timeframe: str, lookback: int, db_path: str) -> int:
+    from broker.alpaca_client import AlpacaPaperClient
+
+    try:
+        client = AlpacaPaperClient.from_env()
+        candles = client.get_bars(symbol, timeframe=timeframe, lookback=lookback)
+    except (RuntimeError, ValueError) as exc:
+        print(exc)
+        return 1
+
+    signal_engine = SignalEngine(SignalConfig())
+    signal = signal_engine.latest_signal(candles, symbol=symbol.upper())
+    position = client.get_position(symbol.upper())
+
+    with SQLiteStore(db_path) as store:
+        store.initialize()
+        store.save_signal(signal, session_id=f"alpaca-advice-{symbol.upper()}")
+        store.save_alpaca_position(position, symbol=symbol.upper())
+
+    print(f"Alpaca paper advice for {symbol.upper()}")
+    print(f"Action: {signal.action}")
+    print(f"Confidence: {signal.confidence:.2f}")
+    print(f"Score: {signal.score:.2f}")
+    print(f"Reason: {signal.reason}")
+    if position:
+        print(f"Paper position: qty={position.qty:g}, market_value={position.market_value}")
+    else:
+        print("Paper position: none")
+    return 0
+
+
+def run_alpaca_paper_trade(
+    symbol: str,
+    qty: float,
+    timeframe: str,
+    lookback: int,
+    confirm_paper: bool,
+    db_path: str,
+) -> int:
+    from broker.alpaca_client import AlpacaPaperClient
+
+    if not confirm_paper:
+        print("Refusing to submit paper order: pass --confirm-paper to confirm.")
+        return 1
+
+    try:
+        client = AlpacaPaperClient.from_env()
+        candles = client.get_bars(symbol, timeframe=timeframe, lookback=lookback)
+    except (RuntimeError, ValueError) as exc:
+        print(exc)
+        return 1
+
+    normalized_symbol = symbol.upper()
+    signal = SignalEngine(SignalConfig()).latest_signal(candles, symbol=normalized_symbol)
+    position = client.get_position(normalized_symbol)
+
+    print(f"Advisory action for {normalized_symbol}: {signal.action} confidence={signal.confidence:.2f}")
+    if signal.action == "HOLD":
+        print("No paper order submitted: HOLD signal.")
+        return 0
+    if signal.action == "BUY" and position is not None:
+        print("BUY skipped: existing paper position found.")
+        return 0
+    if signal.action == "SELL" and position is None:
+        print("SELL skipped: no paper position exists. No shorting allowed.")
+        return 0
+
+    try:
+        order = client.submit_paper_order(normalized_symbol, qty=qty, side=signal.action)
+        new_position = client.get_position(normalized_symbol)
+    except (RuntimeError, ValueError) as exc:
+        print(exc)
+        return 1
+
+    with SQLiteStore(db_path) as store:
+        store.initialize()
+        store.save_signal(signal, session_id=f"alpaca-paper-trade-{normalized_symbol}")
+        store.save_alpaca_order(order)
+        store.save_alpaca_position(new_position, symbol=normalized_symbol)
+
+    print(f"Submitted Alpaca PAPER {signal.action} order for {qty:g} {normalized_symbol}")
+    print(f"Order id: {order.order_id}")
+    print(f"Status: {order.status}")
     return 0
 
 
