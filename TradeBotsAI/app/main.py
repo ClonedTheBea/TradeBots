@@ -484,7 +484,6 @@ def main() -> int:
             args.lookback,
             args.trials,
             args.minimum_trades,
-            args.force_promote,
             args.db,
         )
     if args.command == "tune-symbols":
@@ -506,6 +505,7 @@ def main() -> int:
             args.train_ratio,
             args.trials,
             args.minimum_trades,
+            args.force_promote,
             args.db,
         )
     if args.command == "marketstack-fetch":
