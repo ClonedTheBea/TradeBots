@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from pathlib import Path
 from uuid import uuid4
 
@@ -175,6 +176,25 @@ def parse_args() -> argparse.Namespace:
     alpaca_trade_parser.add_argument("--confirm-paper", action="store_true")
     alpaca_trade_parser.add_argument("--db", default="tradebots_ai.sqlite")
 
+    for command_name, help_text in (
+        ("marketstack-fetch", "Fetch MarketStack OHLCV candles and save them locally"),
+        ("marketstack-advice", "Fetch MarketStack candles and run advisory analysis"),
+        ("marketstack-backtest", "Fetch MarketStack candles and run a backtest"),
+    ):
+        marketstack_parser = subparsers.add_parser(command_name, help=help_text)
+        marketstack_parser.add_argument("--symbol", required=True)
+        marketstack_parser.add_argument("--timeframe", default="1Day")
+        marketstack_parser.add_argument("--lookback", type=int, default=180)
+        marketstack_parser.add_argument("--date-from")
+        marketstack_parser.add_argument("--date-to")
+        marketstack_parser.add_argument("--refresh", action="store_true")
+        marketstack_parser.add_argument("--db", default="tradebots_ai.sqlite")
+        if command_name == "marketstack-fetch":
+            marketstack_parser.add_argument(
+                "--output-csv",
+                help="Optional CSV path to write fetched candles",
+            )
+
     parser.add_argument("--csv", help="Path to OHLCV or close-only candle CSV data")
     parser.add_argument(
         "--db",
@@ -316,6 +336,37 @@ def main() -> int:
             args.confirm_paper,
             args.db,
         )
+    if args.command == "marketstack-fetch":
+        return run_marketstack_fetch(
+            args.symbol,
+            args.timeframe,
+            args.lookback,
+            args.date_from,
+            args.date_to,
+            args.refresh,
+            args.db,
+            args.output_csv,
+        )
+    if args.command == "marketstack-advice":
+        return run_marketstack_advice(
+            args.symbol,
+            args.timeframe,
+            args.lookback,
+            args.date_from,
+            args.date_to,
+            args.refresh,
+            args.db,
+        )
+    if args.command == "marketstack-backtest":
+        return run_marketstack_backtest(
+            args.symbol,
+            args.timeframe,
+            args.lookback,
+            args.date_from,
+            args.date_to,
+            args.refresh,
+            args.db,
+        )
 
     if not args.csv:
         print("CSV path is required unless using capture-once, watch-screen, auto-step, or mouse-pos.")
@@ -431,6 +482,212 @@ def run_alpaca_advice(symbol: str, timeframe: str, lookback: int, db_path: str) 
     else:
         print("Paper position: none")
     return 0
+
+
+def run_marketstack_fetch(
+    symbol: str,
+    timeframe: str,
+    lookback: int,
+    date_from: str | None,
+    date_to: str | None,
+    refresh: bool,
+    db_path: str,
+    output_csv: str | None,
+) -> int:
+    try:
+        candles = _fetch_marketstack_candles(symbol, timeframe, lookback, date_from, date_to, refresh)
+    except (RuntimeError, ValueError) as exc:
+        print(exc)
+        return 1
+
+    normalized_symbol = symbol.upper()
+    with SQLiteStore(db_path) as store:
+        store.initialize()
+        saved_count = store.save_market_candles(candles, "marketstack", normalized_symbol, timeframe)
+
+    print(f"Fetched {len(candles)} MarketStack candles for {normalized_symbol} ({timeframe}).")
+    print(f"Saved {saved_count} candles to SQLite: {Path(db_path).resolve()}")
+    if output_csv:
+        _write_candles_csv(candles, output_csv)
+        print(f"Saved candles to CSV: {Path(output_csv).resolve()}")
+    return 0
+
+
+def run_marketstack_advice(
+    symbol: str,
+    timeframe: str,
+    lookback: int,
+    date_from: str | None,
+    date_to: str | None,
+    refresh: bool,
+    db_path: str,
+) -> int:
+    try:
+        candles = _fetch_marketstack_candles(symbol, timeframe, lookback, date_from, date_to, refresh)
+    except (RuntimeError, ValueError) as exc:
+        print(exc)
+        return 1
+
+    normalized_symbol = symbol.upper()
+    signal_engine = SignalEngine(SignalConfig())
+    session_id = f"marketstack-advice-{normalized_symbol}-{uuid4().hex}"
+    try:
+        signal = signal_engine.latest_signal(candles, symbol=normalized_symbol)
+        backtester = Backtester(signal_engine, BacktestConfig())
+        result = backtester.run(candles, symbol=normalized_symbol)
+        advice = build_advice(signal, result)
+    except ValueError as exc:
+        print(exc)
+        return 1
+
+    with SQLiteStore(db_path) as store:
+        store.initialize()
+        store.save_market_candles(candles, "marketstack", normalized_symbol, timeframe)
+        store.save_signal(signal, session_id=session_id)
+
+    print(f"MarketStack advice for {normalized_symbol} ({timeframe})")
+    print(f"Action: {advice.action}")
+    print(f"Confidence: {advice.adjusted_confidence:.2f}")
+    print(f"Raw Confidence: {advice.raw_confidence:.2f}")
+    print(f"Score: {signal.score:.2f}")
+    print(f"Reason: {advice.reason}")
+    print(f"Session: {session_id}")
+    return 0
+
+
+def run_marketstack_backtest(
+    symbol: str,
+    timeframe: str,
+    lookback: int,
+    date_from: str | None,
+    date_to: str | None,
+    refresh: bool,
+    db_path: str,
+) -> int:
+    try:
+        candles = _fetch_marketstack_candles(symbol, timeframe, lookback, date_from, date_to, refresh)
+    except (RuntimeError, ValueError) as exc:
+        print(exc)
+        return 1
+
+    normalized_symbol = symbol.upper()
+    session_id = f"marketstack-backtest-{normalized_symbol}-{uuid4().hex}"
+    signal_engine = SignalEngine(SignalConfig())
+    try:
+        with SQLiteStore(db_path) as store:
+            store.initialize()
+            store.save_market_candles(candles, "marketstack", normalized_symbol, timeframe)
+            result = Backtester(signal_engine, BacktestConfig()).run(
+                candles,
+                symbol=normalized_symbol,
+                signal_store=store,
+                session_id=session_id,
+            )
+            store.save_backtest_result(result)
+            for trade in result.trades:
+                store.save_trade(trade)
+    except ValueError as exc:
+        print(exc)
+        return 1
+
+    print(f"MarketStack backtest for {normalized_symbol} ({timeframe})")
+    print(
+        "Backtest: "
+        f"start=${result.starting_cash:.2f} "
+        f"end=${result.ending_cash:.2f} "
+        f"return={result.total_return_pct:.2f}% "
+        f"trades={len(result.trades)} "
+        f"signals={len(result.signals)} "
+        f"win_rate={result.win_rate:.2f} "
+        f"avg_profit=${result.average_profit_per_trade:.2f} "
+        f"max_drawdown={result.max_drawdown_pct:.2f}%"
+    )
+    print(f"Session: {session_id}")
+    print(f"Stored results in: {Path(db_path).resolve()}")
+    return 0
+
+
+def _fetch_marketstack_candles(
+    symbol: str,
+    timeframe: str,
+    lookback: int,
+    date_from: str | None,
+    date_to: str | None,
+    refresh: bool,
+):
+    from providers.marketstack import MarketStackClient
+
+    if lookback <= 0:
+        raise ValueError("lookback must be positive")
+
+    client = MarketStackClient.from_env()
+    normalized_timeframe = timeframe.strip().lower()
+    if normalized_timeframe in {"1day", "day", "1d"}:
+        return client.fetch_eod(
+            symbol,
+            date_from=date_from,
+            date_to=date_to,
+            limit=lookback,
+            refresh=refresh,
+        )
+
+    interval = _marketstack_interval_for_timeframe(timeframe)
+    return client.fetch_intraday(
+        symbol,
+        interval=interval,
+        date_from=date_from,
+        date_to=date_to,
+        limit=lookback,
+        refresh=refresh,
+    )
+
+
+def _marketstack_interval_for_timeframe(timeframe: str) -> str:
+    normalized = timeframe.strip().lower()
+    mapping = {
+        "1min": "1min",
+        "1minute": "1min",
+        "5min": "5min",
+        "5minute": "5min",
+        "10min": "10min",
+        "10minute": "10min",
+        "15min": "15min",
+        "15minute": "15min",
+        "30min": "30min",
+        "30minute": "30min",
+        "1hour": "1hour",
+        "hour": "1hour",
+        "1h": "1hour",
+    }
+    if normalized not in mapping:
+        raise ValueError(
+            "Unsupported MarketStack timeframe. Use 1Day, 1min, 5min, 10min, "
+            "15min, 30min, or 1hour."
+        )
+    return mapping[normalized]
+
+
+def _write_candles_csv(candles, output_csv: str) -> None:
+    csv_path = Path(output_csv)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["timestamp", "symbol", "open", "high", "low", "close", "volume"],
+        )
+        writer.writeheader()
+        for candle in candles:
+            writer.writerow(
+                {
+                    "timestamp": candle.timestamp,
+                    "symbol": candle.symbol,
+                    "open": candle.open,
+                    "high": candle.high,
+                    "low": candle.low,
+                    "close": candle.close,
+                    "volume": candle.volume,
+                }
+            )
 
 
 def run_alpaca_paper_trade(

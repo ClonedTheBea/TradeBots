@@ -314,10 +314,79 @@ recent SIP data requires the proper paid market data subscription. To reduce
 subscription errors for historical bar requests, TradeBotsAI moves SIP request
 end times back by at least 15 minutes and prints a warning when SIP is selected.
 
+## MarketStack Market Data
+
+MarketStack support is data-only. It fetches OHLCV candles for real-market
+testing, stores them locally, and feeds the same provider-agnostic strategy,
+advisory, and backtesting code used by CSV and Trade Bots captures. It does not
+place orders.
+
+Install dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+Create `.env` in the `TradeBotsAI` folder:
+
+```text
+MARKETSTACK_API_KEY=your_key
+MARKETSTACK_BASE_URL=https://api.marketstack.com/v2
+MARKETSTACK_DEFAULT_LIMIT=500
+MARKETSTACK_CACHE_ENABLED=true
+```
+
+You can keep the Alpaca variables in the same `.env` if you use Alpaca paper
+commands too. Do not commit real API keys.
+
+Fetch and save candles:
+
+```powershell
+python -m app.main marketstack-fetch --symbol AAPL --timeframe 1Day --lookback 180
+```
+
+Optionally also write a CSV:
+
+```powershell
+python -m app.main marketstack-fetch --symbol AAPL --timeframe 1Day --lookback 180 --output-csv data/aapl_marketstack.csv
+```
+
+Run advice:
+
+```powershell
+python -m app.main marketstack-advice --symbol AAPL --timeframe 1Day --lookback 180
+```
+
+Run a backtest:
+
+```powershell
+python -m app.main marketstack-backtest --symbol AAPL --timeframe 1Day --lookback 365
+```
+
+Timeframes:
+- `1Day` uses MarketStack `/eod`.
+- `1min`, `5min`, `10min`, `15min`, `30min`, and `1hour` use `/intraday`.
+- Unsupported timeframes print a helpful error and do not call the API.
+
+Responses are cached in:
+
+```text
+data/cache/marketstack/
+```
+
+The cache key includes symbol, endpoint, interval, date range, and limit. Use
+`--refresh` to bypass an existing cache entry.
+
+MarketStack plan access varies by free/basic/professional tier. Free and basic
+plans may have stricter limits, delayed data, or less intraday history than
+professional plans. Avoid polling real-time or intraday data wastefully; use the
+local cache, fetch in deliberate batches, and wait when rate-limited.
+
 ## Project Layout
 
 - `app/`: command line entry point and orchestration
 - `data/`: CSV ingestion and candle model
+- `providers/`: external market data adapters
 - `strategy/`: indicators, signals, and backtesting
 - `decision/`: advisory decision output
 - `storage/`: SQLite persistence

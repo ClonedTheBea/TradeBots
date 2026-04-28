@@ -8,7 +8,7 @@ import json
 from types import TracebackType
 from typing import Any, Iterable
 
-from data.models import BacktestResult, Signal, Trade
+from data.models import BacktestResult, Candle, Signal, Trade
 
 
 class SQLiteStore:
@@ -104,6 +104,21 @@ class SQLiteStore:
                 source TEXT NOT NULL DEFAULT 'alpaca_paper',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS market_candles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                open REAL NOT NULL,
+                high REAL NOT NULL,
+                low REAL NOT NULL,
+                close REAL NOT NULL,
+                volume REAL NOT NULL,
+                timeframe TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(provider, symbol, timestamp, timeframe)
+            );
             """
         )
         self._ensure_column("signals", "session_id", "TEXT")
@@ -118,6 +133,41 @@ class SQLiteStore:
             "REAL NOT NULL DEFAULT 0",
         )
         conn.commit()
+
+    def save_market_candles(
+        self,
+        candles: Iterable[Candle],
+        provider: str,
+        symbol: str,
+        timeframe: str,
+    ) -> int:
+        rows = [
+            (
+                provider,
+                symbol.upper(),
+                candle.timestamp,
+                candle.open,
+                candle.high,
+                candle.low,
+                candle.close,
+                candle.volume,
+                timeframe,
+            )
+            for candle in candles
+        ]
+        if not rows:
+            return 0
+        self._conn().executemany(
+            """
+            INSERT OR REPLACE INTO market_candles (
+                provider, symbol, timestamp, open, high, low, close, volume, timeframe
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        self._conn().commit()
+        return len(rows)
 
     def save_alpaca_order(self, order: Any) -> None:
         self._conn().execute(

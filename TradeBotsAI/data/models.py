@@ -14,6 +14,7 @@ class Candle:
     close: float
     volume: float
     is_synthetic: bool = False
+    symbol: str = "UNKNOWN"
 
 
 @dataclass(frozen=True)
