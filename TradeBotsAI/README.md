@@ -22,15 +22,46 @@ python -m unittest discover -s tests
 
 ## CSV Format
 
-CSV files should include:
+CSV files can include full OHLCV data:
 
 ```csv
 timestamp,open,high,low,close,volume
 2024-01-01,100,105,99,104,1200
 ```
 
+Or close-only Trade Bots STEP prices:
+
+```csv
+timestamp,close
+step-001,104
+step-002,102
+```
+
+For close-only data, the assistant sets `open`, `high`, and `low` equal to
+`close`, sets `volume` to `0`, and marks the candle as synthetic. SMA, RSI,
+MACD, and Bollinger Bands all work from close prices, but the CLI will warn
+that indicators or future strategies needing true OHLCV may be less reliable.
+
 Aliases such as `date`, `time`, `datetime`, `vol`, or capitalized column names
 are accepted.
+
+## Manual Trade Bots Price Recording
+
+After each in-game STEP, record the visible current price:
+
+```powershell
+python -m app.main --csv data/manual_prices.csv --record-step --symbol GAME
+```
+
+The command prompts for a timestamp/date and current price, then appends a
+`timestamp,close` row to the CSV. Once at least 35 prices exist, it also prints
+the latest advisory signal.
+
+You can run advisory mode against the recorded file at any time:
+
+```powershell
+python -m app.main --csv data/manual_prices.csv --symbol GAME
+```
 
 ## Project Layout
 
@@ -40,4 +71,3 @@ are accepted.
 - `decision/`: advisory decision output
 - `storage/`: SQLite persistence
 - `tests/`: unit tests
-

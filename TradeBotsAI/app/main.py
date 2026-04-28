@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 from uuid import uuid4
 
+from app.recorder import record_manual_step
 from data.csv_loader import load_candles_from_csv
 from decision.advisor import build_advice
 from storage.sqlite_store import SQLiteStore
@@ -15,7 +16,7 @@ from strategy.signals import SignalConfig, SignalEngine
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="TradeBots AI advisory assistant")
-    parser.add_argument("--csv", required=True, help="Path to OHLCV candle CSV data")
+    parser.add_argument("--csv", required=True, help="Path to OHLCV or close-only candle CSV data")
     parser.add_argument(
         "--db",
         default="tradebots_ai.sqlite",
@@ -45,13 +46,27 @@ def parse_args() -> argparse.Namespace:
         default="best_strategy_params.json",
         help="JSON file path for best optimisation parameters",
     )
+    parser.add_argument(
+        "--record-step",
+        action="store_true",
+        help="Prompt for one timestamp and close price, append it to the CSV, then run advisory if ready",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     csv_path = Path(args.csv)
+
+    if args.record_step:
+        return record_manual_step(csv_path, SignalEngine(SignalConfig()), args.symbol)
+
     candles = load_candles_from_csv(csv_path)
+    if any(candle.is_synthetic for candle in candles):
+        print(
+            "Warning: close-only data detected. Open/high/low were set equal to close "
+            "and volume was set to 0; indicators that need true OHLCV may be less reliable."
+        )
 
     if args.optimise:
         from strategy.optimiser import OptimisationConfig, optimise_strategy

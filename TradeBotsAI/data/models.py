@@ -13,6 +13,7 @@ class Candle:
     low: float
     close: float
     volume: float
+    is_synthetic: bool = False
 
 
 @dataclass(frozen=True)
