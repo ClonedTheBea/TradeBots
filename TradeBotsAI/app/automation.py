@@ -124,6 +124,7 @@ def run_auto_trade(
     print("WARNING: auto-trade is for the Trade Bots simulation only.")
     print("It does not support real-money trading or brokerage integration.")
     print("It will never short sell. Stop with ESC or Ctrl+C.")
+    print_calibration(automation_config)
     if dry_run:
         print(
             "DRY RUN: BUY/SELL/PROCESS TRADE clicks are disabled. "
@@ -456,6 +457,44 @@ def save_current_mouse_position(name: str) -> int:
     position = pyautogui.position()
     save_coordinate(name, int(position.x), int(position.y))
     print(f"Saved {name} coordinate: x={position.x}, y={position.y}")
+    print_calibration()
+    return 0
+
+
+def print_calibration(config: dict[str, float | int | bool] | None = None) -> None:
+    automation_config = config or load_step_config()
+    print("Loaded calibration:")
+    print(f"  BUY: x={automation_config['buy_button_x']}, y={automation_config['buy_button_y']}")
+    print(f"  SELL: x={automation_config['sell_button_x']}, y={automation_config['sell_button_y']}")
+    print(
+        "  PROCESS TRADE: "
+        f"x={automation_config['process_trade_x']}, y={automation_config['process_trade_y']}"
+    )
+    print(f"  SLIDER RIGHT: x={automation_config['slider_right_x']}, y={automation_config['slider_right_y']}")
+    print(f"  STEP: x={automation_config['step_button_x']}, y={automation_config['step_button_y']}")
+    print(f"  AUTO_TRADE_ENABLED: {automation_config['auto_trade_enabled']}")
+
+
+def run_show_calibration() -> int:
+    print_calibration()
+    return 0
+
+
+def click_calibrated_target(name: str) -> int:
+    pyautogui = _load_pyautogui()
+    config = load_step_config()
+    key_map = {
+        "buy_button": ("buy_button_x", "buy_button_y", "BUY"),
+        "sell_button": ("sell_button_x", "sell_button_y", "SELL"),
+        "process_trade": ("process_trade_x", "process_trade_y", "PROCESS TRADE"),
+        "slider_right": ("slider_right_x", "slider_right_y", "SLIDER RIGHT"),
+        "step_button": ("step_button_x", "step_button_y", "STEP"),
+    }
+    x_key, y_key, label = key_map[name]
+    x = config[x_key]
+    y = config[y_key]
+    print(f"Clicking calibrated {label} coordinate at x={x}, y={y}.")
+    pyautogui.click(x, y)
     return 0
 
 

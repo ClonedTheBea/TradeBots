@@ -141,6 +141,18 @@ def parse_args() -> argparse.Namespace:
         ("set-step-button", "Save the current mouse position as the STEP button"),
     ):
         subparsers.add_parser(command_name, help=help_text)
+    subparsers.add_parser(
+        "show-calibration",
+        help="Print the loaded auto-step/auto-trade calibration coordinates",
+    )
+    for command_name, help_text in (
+        ("test-buy-click", "Click the saved BUY coordinate once"),
+        ("test-sell-click", "Click the saved SELL coordinate once"),
+        ("test-process-click", "Click the saved PROCESS TRADE coordinate once"),
+        ("test-slider-click", "Click the saved SLIDER RIGHT coordinate once"),
+        ("test-step-click", "Click the saved STEP coordinate once"),
+    ):
+        subparsers.add_parser(command_name, help=help_text)
 
     parser.add_argument("--csv", help="Path to OHLCV or close-only candle CSV data")
     parser.add_argument(
@@ -248,6 +260,25 @@ def main() -> int:
 
         try:
             return save_current_mouse_position(coordinate_commands[args.command])
+        except RuntimeError as exc:
+            print(exc)
+            return 1
+    if args.command == "show-calibration":
+        from app.automation import run_show_calibration
+
+        return run_show_calibration()
+    click_test_commands = {
+        "test-buy-click": "buy_button",
+        "test-sell-click": "sell_button",
+        "test-process-click": "process_trade",
+        "test-slider-click": "slider_right",
+        "test-step-click": "step_button",
+    }
+    if args.command in click_test_commands:
+        from app.automation import click_calibrated_target
+
+        try:
+            return click_calibrated_target(click_test_commands[args.command])
         except RuntimeError as exc:
             print(exc)
             return 1
